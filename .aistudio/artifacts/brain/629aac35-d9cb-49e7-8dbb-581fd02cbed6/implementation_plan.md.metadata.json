@@ -1,0 +1,6 @@
+{
+  "summary":  "私密空间与书籍全链路加密方案（AES-256-GCM 硬件加速加密、内存会话免密秒开、独立私密空间、窗口切出防窥模糊与闲置自动重锁）",
+  "updatedAt":  "2026-10-25T08:45:45.118890489Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

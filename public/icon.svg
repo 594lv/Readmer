@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#2C1E16"/>
+  <rect x="36" y="36" width="440" height="440" rx="84" fill="#F6F0E6" stroke="#B4532A" stroke-width="6"/>
+  <!-- Open Hardcover Book -->
+  <path d="M116 176C116 164.954 124.954 156 136 156H236C247.046 156 256 164.954 256 176V368C256 356.954 247.046 348 236 348H136C124.954 348 116 339.046 116 328V176Z" fill="#EFE6D5" stroke="#2C1E16" stroke-width="14" stroke-linejoin="round"/>
+  <path d="M396 176C396 164.954 387.046 156 376 156H276C264.954 156 256 164.954 256 176V368C256 356.954 264.954 348 276 348H376C387.046 348 396 339.046 396 328V176Z" fill="#FBF7F0" stroke="#2C1E16" stroke-width="14" stroke-linejoin="round"/>
+  <!-- Book Bookmark Ribbon -->
+  <path d="M242 156H270V256L256 242L242 256V156Z" fill="#B4532A"/>
+  <!-- Warm Coffee Steam Lines -->
+  <path d="M226 124C226 108 242 104 242 88" stroke="#B4532A" stroke-width="10" stroke-linecap="round"/>
+  <path d="M266 130C266 112 284 106 284 86" stroke="#D97724" stroke-width="10" stroke-linecap="round"/>
+  <!-- Editorial Page Lines -->
+  <line x1="148" y1="204" x2="220" y2="204" stroke="#7A6352" stroke-width="8" stroke-linecap="round"/>
+  <line x1="148" y1="236" x2="220" y2="236" stroke="#7A6352" stroke-width="8" stroke-linecap="round"/>
+  <line x1="148" y1="268" x2="196" y2="268" stroke="#7A6352" stroke-width="8" stroke-linecap="round"/>
+  <line x1="292" y1="204" x2="364" y2="204" stroke="#7A6352" stroke-width="8" stroke-linecap="round"/>
+  <line x1="292" y1="236" x2="364" y2="236" stroke="#7A6352" stroke-width="8" stroke-linecap="round"/>
+  <line x1="292" y1="268" x2="340" y2="268" stroke="#7A6352" stroke-width="8" stroke-linecap="round"/>
+</svg>

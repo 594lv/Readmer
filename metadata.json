@@ -1,0 +1,6 @@
+{
+  "name": "焙香书阁 Roast & Reed",
+  "description": "暖色调咖啡馆风格跨平台沉浸式 TXT 与 Markdown 阅读器，支持双页仿真、平滑自动翻页、自定义字体、电子墨水模式与阅读数据统计。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
