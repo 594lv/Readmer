@@ -1812,10 +1812,16 @@ export function triggerFileDownload(filename: string, content: string, mimeType:
   const link = document.createElement('a');
   link.href = url;
   link.download = filename;
+  link.rel = 'noopener';
+  link.style.display = 'none';
   document.body.appendChild(link);
   link.click();
-  document.body.removeChild(link);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setTimeout(() => {
+    if (link.parentNode) {
+      link.parentNode.removeChild(link);
+    }
+    URL.revokeObjectURL(url);
+  }, 15000);
 }
 
 export function validateBackupJson(raw: string): FullLibraryBackup | null {

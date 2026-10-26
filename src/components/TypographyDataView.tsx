@@ -32,8 +32,8 @@ import {
   buildStructuredJsonExport,
   buildStyledHtmlDocument,
   DEFAULT_EXPORT_CONFIG,
+  exportBookWithJsPdf,
   ExportFormat,
-  printDocumentViaHiddenIframe,
   triggerBlobDownload,
 } from '../core/exportEngine';
 import {
@@ -116,10 +116,9 @@ export const TypographyDataView: React.FC<TypographyDataViewProps> = ({
       triggerBlobDownload(`${safeTitle}.epub`, blob);
       showToast('已打包标准 EPUB (.epub) 电子书');
     } else if (format === 'pdf') {
-      await warmUpMermaidDiagramsForContent(selectedBook.content, cfg.themeStyle);
-      const html = buildStyledHtmlDocument(selectedBook, bookAnns, dailyStats, cfg);
-      printDocumentViaHiddenIframe(html);
-      showToast('已唤起精美 PDF 打印排版');
+      showToast('正在生成 A4 典藏 PDF 文件...');
+      const res = await exportBookWithJsPdf(selectedBook, bookAnns, dailyStats, cfg);
+      showToast(`已下载《${safeTitle}》(${res.totalPages} 页 PDF)`);
     } else if (format === 'csv') {
       const csv = buildCsvExport([selectedBook], bookAnns, dailyStats);
       triggerFileDownload(`${safeTitle}-报表.csv`, csv, 'text/csv');
@@ -325,6 +324,22 @@ export const TypographyDataView: React.FC<TypographyDataViewProps> = ({
               </span>
             </div>
 
+            <div className="flex items-center gap-3 rounded-xl p-3" style={{ backgroundColor: 'var(--bg-surface)' }} title="段距">
+              <span className="text-xs font-medium shrink-0" style={{ color: 'var(--text-muted)' }}>段距</span>
+              <input
+                type="range"
+                min={8}
+                max={32}
+                step={2}
+                value={settings.paragraphSpacing}
+                onChange={(e) => onUpdateSettings({ paragraphSpacing: Number(e.target.value) })}
+                className="flex-1 accent-[#B4532A]"
+              />
+              <span className="font-mono-tabular w-10 text-right text-xs font-semibold">
+                {settings.paragraphSpacing}px
+              </span>
+            </div>
+
             <div className="flex items-center gap-3 rounded-xl p-3" style={{ backgroundColor: 'var(--bg-surface)' }} title="页边距">
               <Maximize2 className="h-4 w-4 shrink-0" style={{ color: 'var(--text-muted)' }} />
               <input
@@ -342,12 +357,12 @@ export const TypographyDataView: React.FC<TypographyDataViewProps> = ({
             </div>
 
             <label
-              className="flex cursor-pointer items-center justify-between rounded-xl p-3 text-xs font-medium"
+              className="flex cursor-pointer items-center justify-between rounded-xl p-3 text-xs font-medium sm:col-span-2"
               style={{ backgroundColor: 'var(--bg-surface)' }}
             >
               <span className="flex items-center gap-2">
                 <Indent className="h-4 w-4" style={{ color: 'var(--text-muted)' }} />
-                <span>首行缩进</span>
+                <span>首行缩进 (2em 传统印刷规范)</span>
               </span>
               <input
                 type="checkbox"
@@ -543,7 +558,7 @@ export const TypographyDataView: React.FC<TypographyDataViewProps> = ({
 
             <button
               type="button"
-              onClick={() => setStudioModalFormat('md')}
+              onClick={() => setStudioModalFormat('pdf')}
               className="mt-2.5 flex min-h-[40px] w-full items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-white"
               style={{ backgroundColor: 'var(--accent-primary)' }}
             >

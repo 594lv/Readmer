@@ -134,10 +134,16 @@ export function triggerBlobDownload(filename: string, blob: Blob): void {
   const link = document.createElement('a');
   link.href = url;
   link.download = filename;
+  link.rel = 'noopener';
+  link.style.display = 'none';
   document.body.appendChild(link);
   link.click();
-  document.body.removeChild(link);
-  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  setTimeout(() => {
+    if (link.parentNode) {
+      link.parentNode.removeChild(link);
+    }
+    URL.revokeObjectURL(url);
+  }, 15000);
 }
 
 export function getFilteredChaptersForBook(book: Book, selectedChapterIds: string[]): Chapter[] {
@@ -814,41 +820,20 @@ export function printDocumentViaHiddenIframe(htmlContent: string): void {
   iframe.style.position = 'fixed';
   iframe.style.right = '0';
   iframe.style.bottom = '0';
-  iframe.style.width = '0';
-  iframe.style.height = '0';
+  iframe.style.width = '1px';
+  iframe.style.height = '1px';
+  iframe.style.opacity = '0.01';
+  iframe.style.pointerEvents = 'none';
   iframe.style.border = '0';
   document.body.appendChild(iframe);
 
   let printed = false;
-  const triggerPrintWhenReady = async () => {
+  const triggerPrintWhenReady = () => {
     if (printed) return;
     printed = true;
     try {
       const win = iframe.contentWindow;
       if (!win) return;
-      if (win.document?.fonts?.ready) {
-        await Promise.race([
-          win.document.fonts.ready,
-          new Promise((r) => setTimeout(r, 650)),
-        ]);
-      }
-      // Also wait for any embedded <img> elements (e.g., Mermaid diagram images) to finish decoding
-      const imgs = Array.from(win.document?.querySelectorAll('img') || []);
-      if (imgs.length > 0) {
-        await Promise.race([
-          Promise.all(
-            imgs.map((img) =>
-              img.complete
-                ? Promise.resolve()
-                : new Promise<void>((res) => {
-                    img.onload = () => res();
-                    img.onerror = () => res();
-                  })
-            )
-          ),
-          new Promise((r) => setTimeout(r, 800)),
-        ]);
-      }
       win.focus();
       win.print();
     } catch {
@@ -858,7 +843,7 @@ export function printDocumentViaHiddenIframe(htmlContent: string): void {
   };
 
   iframe.onload = () => {
-    setTimeout(triggerPrintWhenReady, 220);
+    setTimeout(triggerPrintWhenReady, 60);
   };
 
   try {
@@ -867,7 +852,7 @@ export function printDocumentViaHiddenIframe(htmlContent: string): void {
       doc.open('text/html', 'replace');
       doc.write(utf8Html);
       doc.close();
-      setTimeout(triggerPrintWhenReady, 420);
+      setTimeout(triggerPrintWhenReady, 80);
     } else {
       iframe.srcdoc = utf8Html;
     }
@@ -3013,14 +2998,135 @@ export async function loadCjkFontBase64ForJsPdf(): Promise<string | null> {
 }
 
 export function warmUpCjkPdfFont(): void {
-  loadCjkFontBase64ForJsPdf().catch(() => {
-    // ignore background warm-up error
-  });
+  // No-op or optional background warm-up; PDF export now uses instant 2x Retina Canvas + jsPDF pipeline
+}
+
+async function decodePageImagesWithTimeout(
+  pages: VectorPdfPage[],
+  timeoutMs = 350
+): Promise<Map<string, HTMLImageElement>> {
+  const map = new Map<string, HTMLImageElement>();
+  if (typeof Image === 'undefined') return map;
+
+  const uniqueUrls = new Set<string>();
+  for (const p of pages) {
+    for (const img of p.images) {
+      const src = img.pngDataUrl || img.svgDataUrl;
+      if (src) uniqueUrls.add(src);
+    }
+  }
+  if (uniqueUrls.size === 0) return map;
+
+  await Promise.race([
+    Promise.all(
+      Array.from(uniqueUrls).map(
+        (src) =>
+          new Promise<void>((resolve) => {
+            const el = new Image();
+            el.crossOrigin = 'anonymous';
+            el.onload = () => {
+              map.set(src, el);
+              resolve();
+            };
+            el.onerror = () => resolve();
+            el.src = src;
+          })
+      )
+    ),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+
+  return map;
+}
+
+function renderVectorPageToRetinaCanvasJpeg(
+  vp: VectorPdfPage,
+  fontStack: string,
+  decodedImages: Map<string, HTMLImageElement>
+): string {
+  const scale = 2.0; // 2x Retina A4 (1190 x 1684 px)
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(vp.widthPt * scale);
+  canvas.height = Math.round(vp.heightPt * scale);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return '';
+
+  ctx.scale(scale, scale);
+
+  // 1. Page Background
+  ctx.fillStyle = vp.bgColor;
+  ctx.fillRect(0, 0, vp.widthPt, vp.heightPt);
+
+  // 2. Rectangles, Cards, Table Cells & Frames
+  for (const r of vp.rects) {
+    ctx.save();
+    ctx.beginPath();
+    if (r.rx && r.rx > 0 && typeof ctx.roundRect === 'function') {
+      ctx.roundRect(r.x, r.y, r.w, r.h, r.rx);
+    } else {
+      ctx.rect(r.x, r.y, r.w, r.h);
+    }
+    if (r.fill) {
+      ctx.fillStyle = r.fill;
+      ctx.fill();
+    }
+    if (r.stroke) {
+      ctx.strokeStyle = r.stroke;
+      ctx.lineWidth = r.lineWidth ?? 1;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // 3. Lines & Dividers
+  for (const l of vp.lines) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(l.x1, l.y1);
+    ctx.lineTo(l.x2, l.y2);
+    ctx.strokeStyle = l.stroke;
+    ctx.lineWidth = l.lineWidth;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 4. Embedded Mermaid Diagrams
+  for (const img of vp.images) {
+    const src = img.pngDataUrl || img.svgDataUrl;
+    const decoded = src ? decodedImages.get(src) : undefined;
+    if (decoded) {
+      try {
+        ctx.drawImage(decoded, img.x, img.y, img.w, img.h);
+      } catch {
+        // ignore draw error
+      }
+    }
+  }
+
+  // 5. Crisp Typography (Supports Serif, Kaiti, Sans, and Monospace)
+  for (const t of vp.texts) {
+    const cleanText = (t.text || '').replace(/\u3000/g, '  ');
+    if (!cleanText) continue;
+    ctx.save();
+    const family = t.isMono
+      ? '"JetBrains Mono", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", monospace, sans-serif'
+      : fontStack;
+    ctx.font = `${t.fontWeight} ${t.fontSize}px ${family}`;
+    ctx.fillStyle = t.color;
+    ctx.textAlign = t.align === 'right' ? 'right' : t.align === 'center' ? 'center' : 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(cleanText, t.x, t.y);
+    ctx.restore();
+  }
+
+  return canvas.toDataURL('image/jpeg', 0.92);
 }
 
 /**
- * Generates a 100% Vector Text + High-DPI Mermaid Diagram multi-page A4 PDF (`.pdf`)
- * with zero running headers, zero page truncation, and zero garbled characters.
+ * Generates and immediately downloads a multi-page A4 PDF (`.pdf`) via jsPDF.
+ * Uses a fast 2x Retina Canvas + jsPDF pipeline so it never stalls on external 10MB font downloads,
+ * works 100% offline, preserves browser transient user-gesture activation inside iframes,
+ * and faithfully renders Serif/Kaiti/Sans Chinese fonts, tables, and Mermaid diagrams.
  */
 export async function exportBookWithJsPdf(
   book: Book,
@@ -3028,8 +3134,12 @@ export async function exportBookWithJsPdf(
   dailyStats: ReadingStatsDaily[],
   config: ExportConfig
 ): Promise<JsPdfPreviewResult> {
-  // Pre-render all Mermaid diagrams in the book so 100% have pure SVG + 2.5x PNG DataURLs ready
-  await warmUpMermaidDiagramsForContent(book.content, config.themeStyle);
+  // Warm up Mermaid diagrams with a tight 450ms cap so we never lose browser user-gesture activation;
+  // any diagram not yet warmed uses the synchronous pure-SVG generator automatically.
+  await Promise.race([
+    warmUpMermaidDiagramsForContent(book.content, config.themeStyle),
+    new Promise<void>((resolve) => setTimeout(resolve, 450)),
+  ]);
 
   // Render all pages with Infinity limit so long books are never truncated
   const rendered = renderJsPdfPages(book, annotations, dailyStats, config, Infinity);
@@ -3040,110 +3150,59 @@ export async function exportBookWithJsPdf(
   if (config.includeNotes ?? config.includeAnnotations) parts.push('笔记');
   if (config.includeExcerpts ?? config.includeAnnotations) parts.push('书摘');
   const suffix = parts.length > 0 ? parts.join('+') : '典藏';
+  const filename = `${safeTitle}-${suffix}.pdf`;
 
-  const fontBase64 = await loadCjkFontBase64ForJsPdf();
-  if (fontBase64) {
-    try {
-      const pdf = new jsPDF({
-        orientation: 'portrait',
-        unit: 'pt',
-        format: 'a4',
-        compress: true,
-      });
+  const fontStack =
+    config.fontStyle === 'kaiti'
+      ? '"LXGW WenKai", "Kaiti SC", "STKaiti", "KaiTi", "Noto Serif SC", serif'
+      : config.fontStyle === 'sans'
+      ? '"Plus Jakarta Sans", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif'
+      : '"Noto Serif SC", "Songti SC", "Lora", Georgia, serif';
 
-      // Register the TrueType font ONLY ONCE as 'normal' to prevent jsPDF subsetter CMap collisions
-      pdf.addFileToVFS('VectorCJK.ttf', fontBase64);
-      pdf.addFont('VectorCJK.ttf', 'VectorCJK', 'normal', 'Identity-H');
-      pdf.setFont('VectorCJK', 'normal');
+  const decodedImages = await decodePageImagesWithTimeout(rendered.vectorPages, 350);
 
-      pdf.setProperties({
-        title: `《${book.title}》`,
-        subject: '矢量文字与图表导出',
-        author: book.author,
-      });
+  const pdf = new jsPDF({
+    orientation: 'portrait',
+    unit: 'pt',
+    format: 'a4',
+    compress: true,
+  });
 
-      rendered.vectorPages.forEach((vp, pageIdx) => {
-        if (pageIdx > 0) {
-          pdf.addPage('a4', 'portrait');
-        }
+  pdf.setProperties({
+    title: `《${book.title}》`,
+    subject: '典藏读书手账与正文归档',
+    author: book.author,
+  });
 
-        // 1. Vector Background
-        const [bgR, bgG, bgB] = hexToRgbTuple(vp.bgColor);
-        pdf.setFillColor(bgR, bgG, bgB);
-        pdf.rect(0, 0, vp.widthPt, vp.heightPt, 'F');
-
-        // 2. Vector Rectangles & Borders
-        for (const r of vp.rects) {
-          if (r.fill) {
-            const [fr, fg, fb] = hexToRgbTuple(r.fill);
-            pdf.setFillColor(fr, fg, fb);
-          }
-          if (r.stroke) {
-            const [sr, sg, sb] = hexToRgbTuple(r.stroke);
-            pdf.setDrawColor(sr, sg, sb);
-            pdf.setLineWidth(r.lineWidth ?? 1);
-          }
-          const style = r.fill && r.stroke ? 'FD' : r.fill ? 'F' : 'S';
-          if (r.rx && r.rx > 0) {
-            pdf.roundedRect(r.x, r.y, r.w, r.h, r.rx, r.rx, style);
-          } else {
-            pdf.rect(r.x, r.y, r.w, r.h, style);
-          }
-        }
-
-        // 3. Vector Lines
-        for (const l of vp.lines) {
-          const [lr, lg, lb] = hexToRgbTuple(l.stroke);
-          pdf.setDrawColor(lr, lg, lb);
-          pdf.setLineWidth(l.lineWidth);
-          pdf.line(l.x1, l.y1, l.x2, l.y2);
-        }
-
-        // 4. Embedded Mermaid Diagrams (2.5x Retina PNG rasterized from pure SVG)
-        for (const img of vp.images) {
-          if (img.pngDataUrl) {
-            try {
-              pdf.addImage(
-                img.pngDataUrl,
-                'PNG',
-                img.x,
-                img.y,
-                img.w,
-                img.h,
-                undefined,
-                'FAST'
-              );
-            } catch {
-              // ignore individual image embed error
-            }
-          }
-        }
-
-        // 5. True Vector Text (`pdf.text` with single Identity-H Unicode TTF font)
-        for (const t of vp.texts) {
-          const cleanText = (t.text || '').replace(/\u3000/g, '  ');
-          if (!cleanText) continue;
-          const [tr, tg, tb] = hexToRgbTuple(t.color);
-          pdf.setTextColor(tr, tg, tb);
-          pdf.setFont('VectorCJK', 'normal');
-          pdf.setFontSize(t.fontSize);
-          pdf.text(cleanText, t.x, t.y, {
-            align: t.align || 'left',
-          });
-        }
-      });
-
-      pdf.save(`${safeTitle}-${suffix}.pdf`);
-      return rendered;
-    } catch {
-      // Fall through to native vector print engine if jsPDF encounters any font error
+  rendered.vectorPages.forEach((vp, pageIdx) => {
+    if (pageIdx > 0) {
+      pdf.addPage('a4', 'portrait');
     }
-  }
 
-  // Fallback when offline without cached CJK TTF: use browser native vector PDF print engine
-  printDocumentViaHiddenIframe(rendered.vectorPrintHtml);
+    const pageJpegDataUrl = renderVectorPageToRetinaCanvasJpeg(vp, fontStack, decodedImages);
+    if (pageJpegDataUrl) {
+      pdf.addImage(
+        pageJpegDataUrl,
+        'JPEG',
+        0,
+        0,
+        vp.widthPt,
+        vp.heightPt,
+        `page_${pageIdx + 1}`,
+        'FAST'
+      );
+    } else {
+      const [bgR, bgG, bgB] = hexToRgbTuple(vp.bgColor);
+      pdf.setFillColor(bgR, bgG, bgB);
+      pdf.rect(0, 0, vp.widthPt, vp.heightPt, 'F');
+    }
+  });
+
+  const pdfBlob = pdf.output('blob');
+  triggerBlobDownload(filename, pdfBlob);
   return rendered;
 }
+
 
 
 

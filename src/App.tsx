@@ -950,6 +950,13 @@ export default function App() {
             setAnnotations(refreshed.annotations);
             setDailyStats(refreshed.dailyStats);
             setSettings(refreshed.settings);
+            if (vaultKeyRef.current) {
+              await hydratePrivateVaultIntoMemory(
+                vaultKeyRef.current,
+                refreshed.books,
+                refreshed.annotations
+              );
+            }
             showNotice(`已恢复 ${refreshed.books.length} 册书籍`);
             continue;
           }
@@ -1197,8 +1204,16 @@ export default function App() {
       setAnnotations(refreshed.annotations);
       setDailyStats(refreshed.dailyStats);
       setSettings(refreshed.settings);
+      if (vaultKeyRef.current) {
+        await hydratePrivateVaultIntoMemory(
+          vaultKeyRef.current,
+          refreshed.books,
+          refreshed.annotations
+        );
+      }
+      showNotice(`已恢复 ${refreshed.books.length} 册书籍`);
     },
-    [showNotice]
+    [showNotice, hydratePrivateVaultIntoMemory]
   );
 
   if (!isLoaded) {

@@ -354,6 +354,31 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     setPageIndex(Math.max(0, Math.min(virtualPages.length - 1, aligned)));
   }, [virtualPages.length, isSpreadMode, book.id]);
 
+  // Restore scroll position when entering scroll mode or switching books in scroll mode
+  useEffect(() => {
+    if (isPaginated) return;
+    const timer = window.setTimeout(() => {
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      const targetPage = virtualPages[pageIndex];
+      const firstBlockOffset = targetPage?.paragraphs[0]?.startOffset;
+      if (firstBlockOffset !== undefined) {
+        const blockEl = container.querySelector<HTMLElement>(
+          `[data-start-offset="${firstBlockOffset}"]`
+        );
+        if (blockEl) {
+          blockEl.scrollIntoView({ behavior: 'auto', block: 'start' });
+          return;
+        }
+      }
+      if (book.totalChars > 0) {
+        const maxScroll = Math.max(1, container.scrollHeight - container.clientHeight);
+        container.scrollTop = (book.currentOffset / book.totalChars) * maxScroll;
+      }
+    }, 30);
+    return () => window.clearTimeout(timer);
+  }, [isPaginated, book.id]);
+
   // ResizeObserver for Mermaid containers inside ReaderView:
   // When observed container width < 300px, automatically switch Mermaid direction to TD (Top-Down)
   // and strictly clamp chart max-width to viewport width (100vw).
@@ -474,11 +499,21 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       goToPageIndex(targetIdx);
       if (!isPaginated && scrollContainerRef.current && book.totalChars > 0) {
         const el = scrollContainerRef.current;
-        const maxScroll = Math.max(1, el.scrollHeight - el.clientHeight);
-        el.scrollTo({
-          top: (charOffset / book.totalChars) * maxScroll,
-          behavior: 'smooth',
-        });
+        const targetPage = virtualPages[targetIdx];
+        const firstBlockOffset = targetPage?.paragraphs[0]?.startOffset;
+        const blockEl =
+          firstBlockOffset !== undefined
+            ? el.querySelector<HTMLElement>(`[data-start-offset="${firstBlockOffset}"]`)
+            : null;
+        if (blockEl) {
+          blockEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+          const maxScroll = Math.max(1, el.scrollHeight - el.clientHeight);
+          el.scrollTo({
+            top: (charOffset / book.totalChars) * maxScroll,
+            behavior: 'smooth',
+          });
+        }
       }
       if (viewportDim.viewportWidth < 1024) {
         setOutlineOpen(false);
@@ -1307,7 +1342,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   const maxColPx = getMaxColumnWidthPx(settings.maxColumnWidth);
   const singlePageMaxWidthCss =
-    maxColPx !== null && maxColPx < 9000 ? `${maxColPx + 72}px` : '100%';
+    maxColPx !== null && maxColPx < 9000 ? `min(100%, ${maxColPx}px)` : '100%';
 
   const progressPct = useMemo(() => {
     if (isPaginated) {
@@ -1390,7 +1425,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       className={`relative flex h-screen w-screen flex-col overflow-hidden select-text ${
         einkFlashing ? 'eink-flash-anim' : ''
       }`}
-      style={{ backgroundColor: 'var(--bg-canvas)', color: 'var(--text-primary)' }}
+      style={{ backgroundColor: 'var(--bg-page)', color: 'var(--text-primary)' }}
       onMouseEnter={() => {
         if (settings.autoFlipEnabled) setIsAutoPausedByHover(false);
       }}
@@ -2192,46 +2227,34 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           onMouseUp={handleMouseUpSelection}
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
-          className={`relative flex flex-1 items-center justify-center overflow-hidden transition-all duration-200 ${
-            isSinglePage ? 'w-full px-0 sm:px-1.5 md:px-2.5' : 'px-2 sm:px-10'
-          } ${
-            chromeVisible ? 'pt-13 pb-2.5 sm:pt-14 sm:pb-14' : 'pt-13 pb-2.5 sm:py-5'
+          className={`relative flex flex-1 w-full items-stretch justify-center overflow-hidden px-0 transition-all duration-200 ${
+            chromeVisible ? 'pt-13 pb-0 md:pb-12' : 'py-0'
           }`}
         >
           {isPaginated ? (
             <div
-              className={`relative flex h-full w-full flex-col justify-between overflow-hidden transition-all duration-200 ${
-                isSinglePage
-                  ? 'mx-auto rounded-none sm:rounded-xl md:rounded-2xl border-x-0 sm:border-x shadow-none sm:shadow-[var(--page-shadow)]'
-                  : 'max-w-[1280px] mx-auto rounded-2xl shadow-[var(--page-shadow)]'
-              }`}
+              className="relative mx-auto flex h-full w-full max-w-none flex-col justify-between overflow-hidden rounded-none border-0 shadow-none transition-all duration-200"
               style={{
-                maxWidth: isSinglePage ? singlePageMaxWidthCss : '1280px',
+                maxWidth: '100%',
                 backgroundColor: 'var(--bg-page)',
-                border: '1px solid var(--border-subtle)',
+                border: 'none',
+                boxShadow: 'none',
                 padding: isSinglePage
-                  ? `${Math.max(8, Math.min(18, Math.round(settings.pageMargin * 0.35)))}px ${Math.max(
-                      12,
-                      Math.min(settings.pageMargin, Math.floor(effectiveCanvasWidth * 0.06))
-                    )}px`
-                  : `${Math.max(10, Math.min(20, Math.round(settings.pageMargin * 0.4)))}px ${Math.max(
-                      14,
-                      Math.min(settings.pageMargin, Math.floor(effectiveCanvasWidth * 0.05))
-                    )}px`,
+                  ? `4px ${Math.max(10, Math.min(settings.pageMargin, Math.floor(effectiveCanvasWidth * 0.035)))}px`
+                  : `6px ${Math.max(12, Math.min(settings.pageMargin, Math.floor(effectiveCanvasWidth * 0.03)))}px`,
               }}
             >
               {isSpreadMode && (
                 <div
-                  className="pointer-events-none absolute top-0 bottom-0 left-1/2 z-10 w-10 -translate-x-1/2"
+                  className="pointer-events-none absolute top-0 bottom-0 left-1/2 z-10 w-6 -translate-x-1/2"
                   style={{ background: 'var(--spine-gradient)' }}
                 />
               )}
 
               {/* Top Minimal Running Header */}
               <div
-                className="flex shrink-0 items-center justify-between gap-2 border-b pb-1 text-xs"
+                className="flex shrink-0 items-center justify-between gap-2 pb-0.5 text-[11px] opacity-75"
                 style={{
-                  borderColor: 'var(--border-subtle)',
                   color: 'var(--text-muted)',
                 }}
               >
@@ -2245,12 +2268,13 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               {/* Book Text Columns: Full-width auto-centered layout in single-page mode */}
               <div
                 key={pageIndex}
-                className={`reader-page-settle my-1 sm:my-1.5 grid min-h-0 flex-1 overflow-hidden ${
+                className={`reader-page-settle my-0.5 grid min-h-0 flex-1 overflow-hidden ${
                   isSpreadMode
-                    ? 'grid-cols-2 gap-8 lg:gap-12'
+                    ? 'grid-cols-2 gap-5 lg:gap-8'
                     : 'mx-auto w-full max-w-full grid-cols-1'
                 }`}
                 style={{
+                  maxWidth: isSinglePage ? singlePageMaxWidthCss : '100%',
                   fontFamily: getFontFamilyCss(settings.fontFamily),
                   fontSize: `${settings.fontSize}px`,
                   lineHeight: settings.lineHeight,
@@ -2277,9 +2301,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
               {/* Bottom Page Running Footer */}
               <div
-                className="flex items-center justify-between border-t pt-1 text-xs"
+                className="flex shrink-0 items-center justify-between pt-0.5 text-[11px] opacity-75"
                 style={{
-                  borderColor: 'var(--border-subtle)',
                   color: 'var(--text-muted)',
                 }}
               >
@@ -2332,13 +2355,13 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               }}
               onTouchStart={() => setIsAutoPausedByHover(true)}
               onTouchEnd={() => setIsAutoPausedByHover(false)}
-              className="h-full w-full overflow-y-auto rounded-none sm:rounded-2xl transition-colors mx-auto"
+              className="mx-auto h-full w-full max-w-none overflow-y-auto rounded-none border-0 shadow-none transition-colors"
               style={{
-                maxWidth: singlePageMaxWidthCss,
+                maxWidth: '100%',
                 backgroundColor: 'var(--bg-page)',
-                border: '1px solid var(--border-subtle)',
-                boxShadow: 'var(--page-shadow)',
-                padding: `32px ${Math.max(12, Math.min(settings.pageMargin, Math.floor(effectiveCanvasWidth * 0.06)))}px 88px`,
+                border: 'none',
+                boxShadow: 'none',
+                padding: `12px ${Math.max(10, Math.min(settings.pageMargin, Math.floor(effectiveCanvasWidth * 0.035)))}px 64px`,
                 fontFamily: getFontFamilyCss(settings.fontFamily),
                 fontSize: `${settings.fontSize}px`,
                 lineHeight: settings.lineHeight,
@@ -2347,7 +2370,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 overflowWrap: 'break-word',
               }}
             >
-              <div data-reader-column="true" className="mx-auto w-full max-w-full text-justify">
+              <div
+                data-reader-column="true"
+                className="mx-auto w-full text-justify"
+                style={{ maxWidth: singlePageMaxWidthCss }}
+              >
                 {virtualPages.map((page) => (
                   <div key={page.pageNumber}>{renderPageParagraphs(page)}</div>
                 ))}
@@ -3803,9 +3830,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   </span>
                   <input
                     type="range"
-                    min={0.4}
-                    max={2.0}
-                    step={0.1}
+                    min={8}
+                    max={32}
+                    step={2}
                     value={settings.paragraphSpacing}
                     onChange={(e) =>
                       onUpdateSettings({ paragraphSpacing: Number(e.target.value) })
@@ -3813,7 +3840,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     className="flex-1 cursor-pointer accent-[#B4532A]"
                   />
                   <span className="font-mono-tabular w-9 text-right">
-                    {settings.paragraphSpacing.toFixed(1)}em
+                    {settings.paragraphSpacing}px
                   </span>
                 </div>
 

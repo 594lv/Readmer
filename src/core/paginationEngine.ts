@@ -152,9 +152,9 @@ function findSafeSentenceSplitLength(
  * down to the bottom margin without artificial whitespace or overflowing.
  */
 export function getMaxColumnWidthPx(mode: ReaderSettings['maxColumnWidth']): number | null {
-  if (mode === 'narrow') return 680;
-  if (mode === 'standard') return 860;
-  if (mode === 'wide') return 1080;
+  if (mode === 'narrow') return 820;
+  if (mode === 'standard') return 1280;
+  if (mode === 'wide') return 1680;
   return null; // 'full' -> unrestricted
 }
 
@@ -189,22 +189,20 @@ export function paginateBookContent(
 
   const isMobile = dimension.viewportWidth < 640;
   const horizontalPadding = isSpreadMode
-    ? (isMobile ? 52 : Math.max(36, settings.pageMargin * 2))
-    : (isMobile ? 24 : Math.max(20, Math.min(settings.pageMargin * 1.4, 96)));
-  const rawSingleWidth = Math.max(260, dimension.viewportWidth - horizontalPadding);
+    ? (isMobile ? 24 : Math.max(24, Math.min(settings.pageMargin * 1.2, 64)))
+    : (isMobile ? 20 : Math.max(20, Math.min(settings.pageMargin, 56)));
+  const rawSingleWidth = Math.max(280, dimension.viewportWidth - horizontalPadding);
   const measureLimitPx = !isSpreadMode ? getMaxColumnWidthPx(settings.maxColumnWidth) : null;
   const singlePageWidth = isSpreadMode
-    ? Math.max(240, (Math.min(1280, dimension.viewportWidth) - horizontalPadding - 48) / 2)
+    ? Math.max(260, (dimension.viewportWidth - horizontalPadding - 28) / 2)
     : measureLimitPx
       ? Math.min(rawSingleWidth, measureLimitPx)
       : rawSingleWidth;
 
-  // Vertical chrome calculation:
-  // Mobile: top bar ~52px, card padding (~16px), running header (~20px), footer (~20px) = ~108px
-  // Desktop: top bar ~56px, bottom scrubber bar ~52px, card padding (~20px), header/footer/margins (~36px) = ~164px
-  // Calibrated so lines fill cleanly to bottom without premature flush or overflow
-  const verticalChrome = isMobile ? 96 : 142;
-  const usableHeight = Math.max(260, dimension.viewportHeight - verticalChrome);
+  // Vertical chrome calculation for frameless full-bleed reading canvas:
+  // Maximizes vertical lines per page across mobile, tablet, and desktop
+  const verticalChrome = isMobile ? 74 : 104;
+  const usableHeight = Math.max(280, dimension.viewportHeight - verticalChrome);
 
   // In CJK typography, character glyphs are square with 1em width.
   const effectiveCharWidth = settings.fontSize * (1.0 + Math.max(0, settings.letterSpacing));
