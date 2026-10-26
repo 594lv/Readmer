@@ -958,6 +958,16 @@ export const MarkdownBlockRenderer: React.FC<{
       if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) {
         return;
       }
+      // If the mouse click lands in the outer page-turn zones of the reading canvas (left 28% or right 28%),
+      // allow the click event to bubble to handleCanvasZoneClick so mouse users can effortlessly turn pages!
+      const canvasEl = target.closest('main');
+      if (canvasEl) {
+        const rect = canvasEl.getBoundingClientRect();
+        const ratioX = (e.clientX - rect.left) / rect.width;
+        if (ratioX < 0.28 || ratioX > 0.72) {
+          return;
+        }
+      }
       e.stopPropagation();
       onClickBlockForTts(block.startOffset);
     }

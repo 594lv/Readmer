@@ -139,7 +139,7 @@ export const ExportStudioModal: React.FC<ExportStudioModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      warmUpCjkPdfFont();
+      warmUpCjkPdfFont(initialConfig?.fontStyle || config.fontStyle || 'serif');
       setSelectedBookId(book.id);
       setConfig((prev) => ({
         ...prev,
@@ -149,6 +149,12 @@ export const ExportStudioModal: React.FC<ExportStudioModalProps> = ({
       setPdfPreviewPageIdx(0);
     }
   }, [isOpen, book.id, initialFormat, initialConfig]);
+
+  useEffect(() => {
+    if (isOpen && config.format === 'pdf') {
+      warmUpCjkPdfFont(config.fontStyle || 'serif');
+    }
+  }, [isOpen, config.format, config.fontStyle]);
 
   const activeBook = useMemo(() => {
     if (allBooks && allBooks.length > 0) {
@@ -199,12 +205,12 @@ export const ExportStudioModal: React.FC<ExportStudioModalProps> = ({
     [activeBook, config.selectedChapterIds]
   );
 
-  // Live jsPDF multi-page A4 vector preview (renders full book pages)
+  // Live jsPDF multi-page A4 vector preview (renders 100% of book pages to match exported PDF)
   const jsPdfPreview = useMemo(() => {
     if (!isOpen || config.format !== 'pdf') {
       return null;
     }
-    return renderJsPdfPages(activeBook, bookAnnotations, dailyStats, config, 60);
+    return renderJsPdfPages(activeBook, bookAnnotations, dailyStats, config, Infinity);
   }, [isOpen, config, activeBook, bookAnnotations, dailyStats, mermaidReadyTick]);
 
   useEffect(() => {

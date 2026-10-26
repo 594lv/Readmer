@@ -1,10 +1,11 @@
 import { jsPDF } from 'jspdf';
-import { Annotation, Book, Chapter, ReadingStatsDaily } from '../types/reader';
+import { Annotation, Book, Chapter, HighlightColor, ReadingStatsDaily } from '../types/reader';
 import {
   autoWrapUnfencedMermaid,
   extractChapters,
   getExportedMermaidDiagramSync,
   parseDocumentWithMarkdownIt,
+  rasterizePureSvgToPngDataUrl,
   renderFullMarkdownToHtml,
   warmUpMermaidDiagramsForContent,
 } from './parserEngine';
@@ -1742,12 +1743,427 @@ interface PdfBlockItem {
 
 function cleanMarkdownLineForPdf(raw: string): string {
   return raw
+    .replace(/\*\*\*(.+?)\*\*\*/g, '$1')
     .replace(/\*\*(.+?)\*\*/g, '$1')
     .replace(/\*(.+?)\*/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/~~(.+?)~~/g, '$1')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
     .trim();
+}
+
+interface RichTextRun {
+  text: string;
+  width: number;
+  bold: boolean;
+  code: boolean;
+  strike: boolean;
+  highlightColor?: HighlightColor;
+}
+
+interface RichWrappedLine {
+  runs: RichTextRun[];
+  totalWidth: number;
+}
+
+function getPdfHighlightHex(color: HighlightColor, themeStyle: ExportThemeStyle): string {
+  if (themeStyle === 'espresso') {
+    switch (color) {
+      case 'sage':
+        return '#1F422B';
+      case 'caramel':
+        return '#4C2A1A';
+      case 'amber':
+      default:
+        return '#523816';
+    }
+  }
+  switch (color) {
+    case 'sage':
+      return '#D6F0DF';
+    case 'caramel':
+      return '#F6DAC6';
+    case 'amber':
+    default:
+      return '#FBE5B0';
+  }
+}
+
+/**
+ * Parses inline Markdown (`**bold**`, `***bold italic***`, `*italic*`, `` `code` ``, `~~strike~~`, `[text](url)`)
+ * and user highlight annotations into styled runs, then wraps them across lines with exact first-line and
+ * subsequent-line widths so PDF layout matches `MarkdownRenderer.tsx` 100%.
+ */
+function layoutRichMarkdownLines(
+  mCtx: CanvasRenderingContext2D,
+  rawText: string,
+  fontSize: number,
+  fontStack: string,
+  firstLineMaxW: number,
+  otherLinesMaxW: number,
+  annotations?: Annotation[],
+  baseBold = false
+): RichWrappedLine[] {
+  const cleanedInput = (rawText || '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\r/g, '');
+
+  if (!cleanedInput.trim()) {
+    return [];
+  }
+
+  interface StyledSpan {
+    text: string;
+    bold: boolean;
+    code: boolean;
+    strike: boolean;
+  }
+
+  const spans: StyledSpan[] = [];
+  const tokenRegex = /(`[^`]+`|\*\*\*[^*]+\*\*\*|\*\*[^*]+\*\*|~~[^~]+~~|\*[^*\n]+\*)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenRegex.exec(cleanedInput)) !== null) {
+    if (match.index > lastIndex) {
+      spans.push({
+        text: cleanedInput.slice(lastIndex, match.index),
+        bold: baseBold,
+        code: false,
+        strike: false,
+      });
+    }
+    const tok = match[0];
+    if (tok.startsWith('`') && tok.endsWith('`') && tok.length >= 2) {
+      spans.push({
+        text: tok.slice(1, -1),
+        bold: baseBold,
+        code: true,
+        strike: false,
+      });
+    } else if (tok.startsWith('***') && tok.endsWith('***') && tok.length >= 6) {
+      spans.push({
+        text: tok.slice(3, -3),
+        bold: true,
+        code: false,
+        strike: false,
+      });
+    } else if (tok.startsWith('**') && tok.endsWith('**') && tok.length >= 4) {
+      spans.push({
+        text: tok.slice(2, -2),
+        bold: true,
+        code: false,
+        strike: false,
+      });
+    } else if (tok.startsWith('~~') && tok.endsWith('~~') && tok.length >= 4) {
+      spans.push({
+        text: tok.slice(2, -2),
+        bold: baseBold,
+        code: false,
+        strike: true,
+      });
+    } else if (tok.startsWith('*') && tok.endsWith('*') && tok.length >= 2) {
+      spans.push({
+        text: tok.slice(1, -1),
+        bold: baseBold,
+        code: false,
+        strike: false,
+      });
+    } else {
+      spans.push({
+        text: tok,
+        bold: baseBold,
+        code: false,
+        strike: false,
+      });
+    }
+    lastIndex = tokenRegex.lastIndex;
+  }
+
+  if (lastIndex < cleanedInput.length) {
+    spans.push({
+      text: cleanedInput.slice(lastIndex),
+      bold: baseBold,
+      code: false,
+      strike: false,
+    });
+  }
+
+  const plainJoined = spans.map((s) => s.text).join('');
+  const charHighlightMap = new Array<HighlightColor | undefined>(plainJoined.length);
+  if (annotations && annotations.length > 0 && plainJoined.length > 0) {
+    for (const ann of annotations) {
+      const target = (ann.selectedText || '').trim();
+      if (target.length < 2) continue;
+      let searchPos = 0;
+      while (searchPos < plainJoined.length) {
+        const foundIdx = plainJoined.indexOf(target, searchPos);
+        if (foundIdx === -1) break;
+        for (let k = foundIdx; k < foundIdx + target.length; k++) {
+          charHighlightMap[k] = ann.color;
+        }
+        searchPos = foundIdx + target.length;
+      }
+    }
+  }
+
+  interface AtomicUnit {
+    text: string;
+    width: number;
+    bold: boolean;
+    code: boolean;
+    strike: boolean;
+    highlightColor?: HighlightColor;
+    isNewline?: boolean;
+  }
+
+  const units: AtomicUnit[] = [];
+  let globalCharIdx = 0;
+
+  const measureUnit = (txt: string, bold: boolean, code: boolean): number => {
+    const sz = code ? fontSize * 0.92 : fontSize;
+    const fam = code ? '"JetBrains Mono", monospace' : fontStack;
+    mCtx.font = `${bold ? '700' : '400'} ${sz}px ${fam}`;
+    return mCtx.measureText(txt).width;
+  };
+
+  for (const sp of spans) {
+    let i = 0;
+    while (i < sp.text.length) {
+      const ch = sp.text[i];
+      const hl = charHighlightMap[globalCharIdx];
+
+      if (ch === '\n') {
+        units.push({
+          text: '\n',
+          width: 0,
+          bold: sp.bold,
+          code: sp.code,
+          strike: sp.strike,
+          highlightColor: hl,
+          isNewline: true,
+        });
+        i++;
+        globalCharIdx++;
+        continue;
+      }
+
+      // Group contiguous ASCII word characters with identical highlight so English words don't break mid-word
+      if (/[A-Za-z0-9_./:-]/.test(ch)) {
+        let word = ch;
+        let j = i + 1;
+        while (
+          j < sp.text.length &&
+          /[A-Za-z0-9_./:-]/.test(sp.text[j]) &&
+          charHighlightMap[globalCharIdx + (j - i)] === hl &&
+          word.length < 28
+        ) {
+          word += sp.text[j];
+          j++;
+        }
+        units.push({
+          text: word,
+          width: measureUnit(word, sp.bold, sp.code),
+          bold: sp.bold,
+          code: sp.code,
+          strike: sp.strike,
+          highlightColor: hl,
+        });
+        globalCharIdx += j - i;
+        i = j;
+        continue;
+      }
+
+      // Attach closing CJK punctuation to the preceding character if same style so punctuation never starts a line alone
+      if (
+        units.length > 0 &&
+        !units[units.length - 1].isNewline &&
+        /^[，。、；：？！）》」”’】]$/.test(ch) &&
+        units[units.length - 1].bold === sp.bold &&
+        units[units.length - 1].code === sp.code &&
+        units[units.length - 1].strike === sp.strike &&
+        units[units.length - 1].highlightColor === hl
+      ) {
+        const prev = units[units.length - 1];
+        prev.text += ch;
+        prev.width = measureUnit(prev.text, prev.bold, prev.code);
+        i++;
+        globalCharIdx++;
+        continue;
+      }
+
+      units.push({
+        text: ch,
+        width: measureUnit(ch, sp.bold, sp.code),
+        bold: sp.bold,
+        code: sp.code,
+        strike: sp.strike,
+        highlightColor: hl,
+      });
+      i++;
+      globalCharIdx++;
+    }
+  }
+
+  const lines: RichWrappedLine[] = [];
+  let currentUnits: AtomicUnit[] = [];
+  let currentWidth = 0;
+
+  const flushLine = () => {
+    if (currentUnits.length === 0) return;
+    const runs: RichTextRun[] = [];
+    for (const u of currentUnits) {
+      const lastRun = runs[runs.length - 1];
+      if (
+        lastRun &&
+        lastRun.bold === u.bold &&
+        lastRun.code === u.code &&
+        lastRun.strike === u.strike &&
+        lastRun.highlightColor === u.highlightColor
+      ) {
+        lastRun.text += u.text;
+        lastRun.width = measureUnit(lastRun.text, lastRun.bold, lastRun.code);
+      } else {
+        runs.push({
+          text: u.text,
+          width: u.width,
+          bold: u.bold,
+          code: u.code,
+          strike: u.strike,
+          highlightColor: u.highlightColor,
+        });
+      }
+    }
+    const totalW = runs.reduce((acc, r) => acc + r.width, 0);
+    lines.push({ runs, totalWidth: totalW });
+    currentUnits = [];
+    currentWidth = 0;
+  };
+
+  for (const u of units) {
+    if (u.isNewline) {
+      flushLine();
+      continue;
+    }
+    const activeMaxW = (lines.length === 0 ? firstLineMaxW : otherLinesMaxW) * 0.985;
+    if (currentUnits.length === 0 && /^\s+$/.test(u.text)) {
+      continue;
+    }
+    if (currentWidth + u.width > activeMaxW && currentUnits.length > 0) {
+      flushLine();
+      if (/^\s+$/.test(u.text)) {
+        continue;
+      }
+    }
+    currentUnits.push(u);
+    currentWidth += u.width;
+  }
+  flushLine();
+
+  return lines;
+}
+
+function drawRichMarkdownLine(
+  page: VectorPdfPage,
+  line: RichWrappedLine,
+  baseX: number,
+  baselineY: number,
+  fontSize: number,
+  baseWeight: '400' | '600' | '700',
+  baseColor: string,
+  palette: {
+    bgSurface: string;
+    border: string;
+    accent: string;
+  },
+  themeStyle: ExportThemeStyle,
+  align: 'left' | 'center' | 'right' = 'left',
+  boxWidth = 0
+): void {
+  let curX = baseX;
+  if (align === 'center' && boxWidth > 0) {
+    curX = baseX + Math.max(0, (boxWidth - line.totalWidth) / 2);
+  } else if (align === 'right' && boxWidth > 0) {
+    curX = baseX + Math.max(0, boxWidth - line.totalWidth);
+  }
+
+  for (const run of line.runs) {
+    if (!run.text) continue;
+    const effectiveFontSize = run.code ? Number((fontSize * 0.92).toFixed(2)) : fontSize;
+    const effectiveWeight: '400' | '600' | '700' = run.bold ? '700' : baseWeight;
+    const effectiveColor = run.code ? palette.accent : baseColor;
+
+    if (run.highlightColor) {
+      page.rects.push({
+        x: curX - 1,
+        y: baselineY - fontSize * 0.86,
+        w: run.width + 2,
+        h: fontSize * 1.14,
+        rx: 2,
+        fill: getPdfHighlightHex(run.highlightColor, themeStyle),
+      });
+    }
+
+    if (run.code) {
+      page.rects.push({
+        x: curX - 1.5,
+        y: baselineY - fontSize * 0.84,
+        w: run.width + 3,
+        h: fontSize * 1.1,
+        rx: 2.5,
+        fill: palette.bgSurface,
+        stroke: palette.border,
+        lineWidth: 0.4,
+      });
+    }
+
+    page.texts.push({
+      text: run.text,
+      x: curX,
+      y: baselineY,
+      fontSize: effectiveFontSize,
+      fontWeight: effectiveWeight,
+      color: effectiveColor,
+      isMono: run.code,
+    });
+
+    if (run.strike) {
+      page.lines.push({
+        x1: curX,
+        y1: baselineY - fontSize * 0.32,
+        x2: curX + run.width,
+        y2: baselineY - fontSize * 0.32,
+        stroke: effectiveColor,
+        lineWidth: 0.7,
+      });
+    }
+
+    curX += run.width + (run.code ? 2 : 0);
+  }
+}
+
+/**
+ * Embeds a Mermaid SVG directly as a nested `<svg x="..." y="..." width="..." height="..." viewBox="...">`
+ * inside the page SVG so `<img src="data:image/svg+xml...">` renders 100% of diagrams natively as pure vector.
+ */
+function buildNestedSvgFragmentForPage(img: VectorImageOp): string {
+  if (img.svgMarkup) {
+    const vbMatch = img.svgMarkup.match(/\bviewBox=(["'])([^"']+)\1/i);
+    const viewBox = vbMatch ? vbMatch[2] : `0 0 ${Math.round(img.w)} ${Math.round(img.h)}`;
+    const innerMatch = img.svgMarkup.match(/<svg[^>]*>([\s\S]*?)<\/svg>/i);
+    if (innerMatch) {
+      return `<svg x="${img.x}" y="${img.y}" width="${img.w}" height="${img.h}" viewBox="${escapeXml(
+        viewBox
+      )}" preserveAspectRatio="xMidYMid meet">${innerMatch[1]}</svg>`;
+    }
+  }
+  const href = img.pngDataUrl || img.svgDataUrl;
+  if (href) {
+    return `<image x="${img.x}" y="${img.y}" width="${img.w}" height="${img.h}" href="${escapeXml(
+      href
+    )}" preserveAspectRatio="xMidYMid meet"/>`;
+  }
+  return '';
 }
 
 function renderVectorPageToSvgString(page: VectorPdfPage, fontStack: string): string {
@@ -1775,13 +2191,9 @@ function renderVectorPageToSvgString(page: VectorPdfPage, fontStack: string): st
   }
 
   for (const img of page.images) {
-    const href = img.pngDataUrl || img.svgDataUrl;
-    if (href) {
-      parts.push(
-        `<image x="${img.x}" y="${img.y}" width="${img.w}" height="${img.h}" href="${escapeXml(
-          href
-        )}" preserveAspectRatio="xMidYMid meet"/>`
-      );
+    const nested = buildNestedSvgFragmentForPage(img);
+    if (nested) {
+      parts.push(nested);
     }
   }
 
@@ -2026,86 +2438,96 @@ export function renderJsPdfPages(
     });
   }
 
+  // Only include Excerpts / Notes sections when annotations actually exist (or when FullText is unchecked)
+  // so books without annotations match the clean Reader page display without artificial empty placeholders.
   if (showExcerpts && showNotes) {
-    blocks.push({
-      kind: 'section-title',
-      title: `精选书摘与随笔笔记 (${sortedAnns.length} 条)`,
-    });
-    if (sortedAnns.length === 0) {
+    if (sortedAnns.length > 0 || !showFullText) {
       blocks.push({
-        kind: 'paragraph',
-        text: '当前书籍暂无高亮书摘或随笔批注记录。可在阅读器中划选任意段落添加金句书摘与读书感悟。',
+        kind: 'section-title',
+        title: `精选书摘与随笔笔记 (${sortedAnns.length} 条)`,
       });
-    } else {
-      sortedAnns.forEach((ann, idx) => {
-        const dateStr = new Date(ann.createdAt).toLocaleDateString('zh-CN');
+      if (sortedAnns.length === 0) {
         blocks.push({
-          kind: 'note-card',
-          title: `#${String(idx + 1).padStart(2, '0')} · ${ann.chapterTitle}`,
-          metaRight: `偏移 ${ann.charOffset} · ${dateStr}`,
-          text: ann.selectedText,
-          noteText: ann.noteText?.trim() || '',
+          kind: 'paragraph',
+          text: '当前书籍暂无高亮书摘或随笔批注记录。可在阅读器中划选任意段落添加金句书摘与读书感悟。',
         });
-      });
+      } else {
+        sortedAnns.forEach((ann, idx) => {
+          const dateStr = new Date(ann.createdAt).toLocaleDateString('zh-CN');
+          blocks.push({
+            kind: 'note-card',
+            title: `#${String(idx + 1).padStart(2, '0')} · ${ann.chapterTitle}`,
+            metaRight: `偏移 ${ann.charOffset} · ${dateStr}`,
+            text: ann.selectedText,
+            noteText: ann.noteText?.trim() || '',
+          });
+        });
+      }
     }
   } else if (showExcerpts) {
-    blocks.push({
-      kind: 'section-title',
-      title: `精选书摘 (${sortedAnns.length} 条)`,
-    });
-    if (sortedAnns.length === 0) {
+    if (sortedAnns.length > 0 || !showFullText) {
       blocks.push({
-        kind: 'paragraph',
-        text: '当前书籍暂无精选书摘记录。',
+        kind: 'section-title',
+        title: `精选书摘 (${sortedAnns.length} 条)`,
       });
-    } else {
-      sortedAnns.forEach((ann, idx) => {
-        const dateStr = new Date(ann.createdAt).toLocaleDateString('zh-CN');
+      if (sortedAnns.length === 0) {
         blocks.push({
-          kind: 'excerpt-card',
-          title: `书摘 #${String(idx + 1).padStart(2, '0')} · ${ann.chapterTitle}`,
-          metaRight: dateStr,
-          text: ann.selectedText,
+          kind: 'paragraph',
+          text: '当前书籍暂无精选书摘记录。',
         });
-      });
+      } else {
+        sortedAnns.forEach((ann, idx) => {
+          const dateStr = new Date(ann.createdAt).toLocaleDateString('zh-CN');
+          blocks.push({
+            kind: 'excerpt-card',
+            title: `书摘 #${String(idx + 1).padStart(2, '0')} · ${ann.chapterTitle}`,
+            metaRight: dateStr,
+            text: ann.selectedText,
+          });
+        });
+      }
     }
   } else if (showNotes) {
-    blocks.push({
-      kind: 'section-title',
-      title: `读者随笔笔记 (${notesOnly.length} 条)`,
-    });
     const targetNotes = notesOnly.length > 0 ? notesOnly : sortedAnns;
-    if (targetNotes.length === 0) {
+    if (targetNotes.length > 0 || !showFullText) {
       blocks.push({
-        kind: 'paragraph',
-        text: '当前书籍暂无随笔笔记记录。',
+        kind: 'section-title',
+        title: `读者随笔笔记 (${notesOnly.length} 条)`,
       });
-    } else {
-      targetNotes.forEach((ann, idx) => {
-        const dateStr = new Date(ann.createdAt).toLocaleDateString('zh-CN');
+      if (targetNotes.length === 0) {
         blocks.push({
-          kind: 'note-card',
-          title: `笔记 #${String(idx + 1).padStart(2, '0')} · ${ann.chapterTitle}`,
-          metaRight: dateStr,
-          text: ann.selectedText,
-          noteText: ann.noteText?.trim() || '（原句摘录标记）',
+          kind: 'paragraph',
+          text: '当前书籍暂无随笔笔记记录。',
         });
-      });
+      } else {
+        targetNotes.forEach((ann, idx) => {
+          const dateStr = new Date(ann.createdAt).toLocaleDateString('zh-CN');
+          blocks.push({
+            kind: 'note-card',
+            title: `笔记 #${String(idx + 1).padStart(2, '0')} · ${ann.chapterTitle}`,
+            metaRight: dateStr,
+            text: ann.selectedText,
+            noteText: ann.noteText?.trim() || '（原句摘录标记）',
+          });
+        });
+      }
     }
   }
 
   if (showFullText) {
-    blocks.push({
-      kind: 'section-title',
-      title: '正文典藏',
-    });
+    if (blocks.length > 0) {
+      blocks.push({
+        kind: 'section-title',
+        title: '正文典藏',
+      });
+    }
 
     const rawBody =
       config.selectedChapterIds.length > 0
         ? chapters.map((ch) => book.content.slice(ch.startOffset, ch.endOffset)).join('\n\n')
         : book.content;
 
-    // Parse full Markdown/TXT AST via markdown-it so 100% of Mermaid diagrams, tables, code blocks, and lists are preserved!
+    // Parse full Markdown/TXT AST via markdown-it so 100% of Mermaid diagrams, tables, code blocks, lists, and inline styles are preserved!
     const parsedBlocks = parseDocumentWithMarkdownIt(rawBody);
 
     for (const pb of parsedBlocks) {
@@ -2113,7 +2535,7 @@ export function renderJsPdfPages(
         blocks.push({
           kind: 'chapter-heading',
           level: pb.level || 2,
-          title: cleanMarkdownLineForPdf(pb.text),
+          title: pb.text.trim(),
         });
       } else if (pb.type === 'mermaid') {
         if (pb.text.trim()) {
@@ -2125,18 +2547,16 @@ export function renderJsPdfPages(
       } else if (pb.type === 'table') {
         blocks.push({
           kind: 'table-block',
-          tableHeaders: (pb.tableHeaders || []).map((h) => cleanMarkdownLineForPdf(h)),
+          tableHeaders: (pb.tableHeaders || []).map((h) => h.trim()),
           tableAlign: pb.tableAlign || [],
-          tableRows: (pb.tableRows || []).map((row) =>
-            row.map((cell) => cleanMarkdownLineForPdf(cell))
-          ),
+          tableRows: (pb.tableRows || []).map((row) => row.map((cell) => cell.trim())),
         });
       } else if (pb.type === 'code') {
         if (pb.text.trim()) {
           blocks.push({
             kind: 'code-block',
             text: pb.text,
-            lang: pb.lang || 'code',
+            lang: pb.lang || 'text',
           });
         }
       } else if (pb.type === 'list') {
@@ -2145,7 +2565,7 @@ export function renderJsPdfPages(
             kind: 'list-block',
             ordered: pb.ordered,
             listItems: pb.listItems.map((it) => ({
-              text: cleanMarkdownLineForPdf(it.text),
+              text: it.text.trim(),
               task: it.task,
               checked: it.checked,
             })),
@@ -2154,14 +2574,14 @@ export function renderJsPdfPages(
       } else if (pb.type === 'blockquote') {
         blocks.push({
           kind: 'blockquote',
-          text: cleanMarkdownLineForPdf(pb.text),
+          text: pb.text.trim(),
         });
       } else if (pb.type === 'hr') {
         blocks.push({ kind: 'divider' });
       } else if (pb.text.trim()) {
         blocks.push({
           kind: 'paragraph',
-          text: cleanMarkdownLineForPdf(pb.text),
+          text: pb.text.trim(),
         });
       }
     }
@@ -2351,8 +2771,9 @@ export function renderJsPdfPages(
       if (!ensureSpace(22)) break;
       const p = current.page;
       const indent = Math.max(0, ((block.level || 1) - 1) * 14);
+      const cleanTitle = cleanMarkdownLineForPdf(block.title || '');
       p.texts.push({
-        text: block.title || '',
+        text: cleanTitle,
         x: marginX + indent,
         y: cursorY + 13,
         fontSize: 10.5,
@@ -2389,7 +2810,7 @@ export function renderJsPdfPages(
       mCtx.font = `400 10.5px ${fontStack}`;
       const quoteLines = wrapCanvasParagraphs(
         mCtx,
-        `「${block.text || ''}」`,
+        `「${cleanMarkdownLineForPdf(block.text || '')}」`,
         contentW - 28
       );
       let noteLines: string[] = [];
@@ -2397,7 +2818,7 @@ export function renderJsPdfPages(
         mCtx.font = `400 10px ${fontStack}`;
         noteLines = wrapCanvasParagraphs(
           mCtx,
-          `随笔感悟：${block.noteText}`,
+          `随笔感悟：${cleanMarkdownLineForPdf(block.noteText)}`,
           contentW - 28
         );
       }
@@ -2485,29 +2906,55 @@ export function renderJsPdfPages(
       continue;
     }
 
+    // Multi-level Headings (H1 - H4) with multi-line wrapping & Reader-matched scale
     if (block.kind === 'chapter-heading') {
-      const isH1 = (block.level || 1) === 1;
-      const needed = isH1 ? 34 : 26;
-      if (!ensureSpace(needed)) break;
-      const p = current.page;
-      cursorY += isH1 ? 8 : 4;
-      p.texts.push({
-        text: block.title || '',
-        x: marginX,
-        y: cursorY + 14,
-        fontSize: isH1 ? 13 : 11.5,
-        fontWeight: '700',
-        color: palette.accent,
-      });
-      cursorY += isH1 ? 24 : 20;
+      const level = block.level || 2;
+      const hFontSize =
+        level === 1 ? 15 : level === 2 ? 13 : level === 3 ? 11.5 : 10.8;
+      const hLineH =
+        level === 1 ? 22 : level === 2 ? 19.5 : level === 3 ? 17.5 : 16.5;
+      const topGap = level === 1 ? 10 : level === 2 ? 8 : 5;
+      const bottomGap = level === 1 ? 6 : 4;
+      const hColor = level >= 4 ? palette.textSecondary : palette.textPrimary;
+
+      const hLines = layoutRichMarkdownLines(
+        mCtx,
+        block.title || '',
+        hFontSize,
+        fontStack,
+        contentW,
+        contentW,
+        sortedAnns,
+        true
+      );
+      const totalH = topGap + Math.max(1, hLines.length) * hLineH + bottomGap;
+      if (!ensureSpace(totalH)) break;
+
+      cursorY += topGap;
+      for (const hLine of hLines) {
+        drawRichMarkdownLine(
+          current.page,
+          hLine,
+          marginX,
+          cursorY + hFontSize * 0.88,
+          hFontSize,
+          '700',
+          hColor,
+          palette,
+          config.themeStyle
+        );
+        cursorY += hLineH;
+      }
+      cursorY += bottomGap;
       continue;
     }
 
-    // 100% Mermaid Diagram Output in PDF Preview, Native Print, and jsPDF Download
+    // 100% Mermaid Diagram Card Output (with MERMAID header bar matching ReaderView)
     if (block.kind === 'mermaid-diagram') {
       const diag = getExportedMermaidDiagramSync(block.text || '', config.themeStyle);
-      const maxDiagW = contentW - 20;
-      const maxDiagH = Math.min(360, contentBottomY - contentTopY - 46);
+      const headerBarH = 22;
+      const maxDiagW = contentW - 24;
+      const maxDiagH = Math.min(340, contentBottomY - contentTopY - headerBarH - 36);
       const aspect = diag.width > 0 && diag.height > 0 ? diag.width / diag.height : 2.0;
 
       let renderW = maxDiagW;
@@ -2520,7 +2967,7 @@ export function renderJsPdfPages(
         renderH = 84;
       }
 
-      const boxH = Math.ceil(renderH + 26);
+      const boxH = Math.ceil(headerBarH + renderH + 20);
       if (!ensureSpace(boxH + 10)) break;
       const p = current.page;
 
@@ -2535,8 +2982,27 @@ export function renderJsPdfPages(
         lineWidth: 0.8,
       });
 
+      // Top MERMAID header bar matching MermaidBlock in MarkdownRenderer.tsx
+      p.texts.push({
+        text: 'MERMAID',
+        x: marginX + 12,
+        y: cursorY + 14.5,
+        fontSize: 8.5,
+        fontWeight: '600',
+        color: palette.textMuted,
+        isMono: true,
+      });
+      p.lines.push({
+        x1: marginX,
+        y1: cursorY + headerBarH,
+        x2: marginX + contentW,
+        y2: cursorY + headerBarH,
+        stroke: palette.border,
+        lineWidth: 0.5,
+      });
+
       const imgX = marginX + (contentW - renderW) / 2;
-      const imgY = cursorY + 13;
+      const imgY = cursorY + headerBarH + 10;
 
       p.images.push({
         x: imgX,
@@ -2552,10 +3018,11 @@ export function renderJsPdfPages(
       continue;
     }
 
-    // Multi-Column Bordered Table Output with Header Repetition Across Pages
+    // Multi-Column Bordered Table Output with Header Repetition, Alignment & Inline Styles
     if (block.kind === 'table-block') {
       const headers = block.tableHeaders || [];
       const rows = block.tableRows || [];
+      const aligns = block.tableAlign || [];
       const colCount = Math.max(
         headers.length,
         rows.reduce((max, r) => Math.max(max, r.length), 0),
@@ -2563,17 +3030,27 @@ export function renderJsPdfPages(
       );
       const colW = contentW / colCount;
       const cellPadX = 6;
-      const lineH = 13.5;
+      const lineH = 14;
+      const cellFontSize = 9;
 
       const measureRowCells = (cells: string[], isHeader: boolean) => {
-        mCtx.font = `${isHeader ? '600' : '400'} 9px ${fontStack}`;
-        const wrappedCols: string[][] = [];
+        const wrappedCols: RichWrappedLine[][] = [];
         let maxLines = 1;
+        const availW = Math.max(24, colW - cellPadX * 2);
         for (let c = 0; c < colCount; c++) {
           const val = (cells[c] || '').trim();
           const lines = val
-            ? wrapCanvasParagraphs(mCtx, val, Math.max(24, colW - cellPadX * 2))
-            : [''];
+            ? layoutRichMarkdownLines(
+                mCtx,
+                val,
+                cellFontSize,
+                fontStack,
+                availW,
+                availW,
+                sortedAnns,
+                isHeader
+              )
+            : [];
           wrappedCols.push(lines);
           if (lines.length > maxLines) maxLines = lines.length;
         }
@@ -2582,7 +3059,7 @@ export function renderJsPdfPages(
       };
 
       const drawTableRow = (
-        wrappedCols: string[][],
+        wrappedCols: RichWrappedLine[][],
         rowH: number,
         isHeader: boolean
       ) => {
@@ -2597,6 +3074,7 @@ export function renderJsPdfPages(
           lineWidth: 0.6,
         });
 
+        const availW = Math.max(24, colW - cellPadX * 2);
         for (let c = 0; c < colCount; c++) {
           const cellX = marginX + c * colW;
           if (c > 0) {
@@ -2610,18 +3088,22 @@ export function renderJsPdfPages(
             });
           }
           const lines = wrappedCols[c] || [];
+          const colAlign = (aligns[c] || 'left') as 'left' | 'center' | 'right';
           let textY = cursorY + 13;
           for (const ln of lines) {
-            if (ln) {
-              p.texts.push({
-                text: ln,
-                x: cellX + cellPadX,
-                y: textY,
-                fontSize: 9,
-                fontWeight: isHeader ? '600' : '400',
-                color: isHeader ? palette.accent : palette.textPrimary,
-              });
-            }
+            drawRichMarkdownLine(
+              p,
+              ln,
+              cellX + cellPadX,
+              textY,
+              cellFontSize,
+              isHeader ? '600' : '400',
+              isHeader ? palette.accent : palette.textPrimary,
+              palette,
+              config.themeStyle,
+              colAlign,
+              availW
+            );
             textY += lineH;
           }
         }
@@ -2657,16 +3139,33 @@ export function renderJsPdfPages(
       continue;
     }
 
-    // Framed Monospace Code Block Output
+    // Framed Monospace Code Block Output with Top Language Header Bar (matching CodeBlockView)
     if (block.kind === 'code-block') {
       mCtx.font = `400 9px "JetBrains Mono", monospace`;
       const codeLines = wrapCanvasParagraphs(mCtx, block.text || '', contentW - 24);
       const lineH = 14;
-      const boxH = codeLines.length * lineH + 24;
+      const headerBarH = 22;
+      const langLabel = (block.lang || 'text').toUpperCase();
 
-      if (boxH <= contentBottomY - contentTopY - 20) {
-        if (!ensureSpace(boxH + 8)) break;
+      let lineCursor = 0;
+      let isContinuation = false;
+      let stopped = false;
+
+      while (lineCursor < codeLines.length) {
+        const minNeeded = headerBarH + lineH + 16;
+        if (!ensureSpace(minNeeded)) {
+          stopped = true;
+          break;
+        }
+        const availH = contentBottomY - cursorY;
+        const maxLinesHere = Math.max(
+          1,
+          Math.floor((availH - headerBarH - 14) / lineH)
+        );
+        const chunk = codeLines.slice(lineCursor, lineCursor + maxLinesHere);
+        const boxH = headerBarH + chunk.length * lineH + 12;
         const p = current.page;
+
         p.rects.push({
           x: marginX,
           y: cursorY,
@@ -2677,87 +3176,138 @@ export function renderJsPdfPages(
           stroke: palette.border,
           lineWidth: 0.6,
         });
-        let cY = cursorY + 16;
-        for (const cl of codeLines) {
+
+        p.texts.push({
+          text: isContinuation ? `${langLabel} (续)` : langLabel,
+          x: marginX + 12,
+          y: cursorY + 14.5,
+          fontSize: 8.5,
+          fontWeight: '600',
+          color: palette.textMuted,
+          isMono: true,
+        });
+
+        p.lines.push({
+          x1: marginX,
+          y1: cursorY + headerBarH,
+          x2: marginX + contentW,
+          y2: cursorY + headerBarH,
+          stroke: palette.border,
+          lineWidth: 0.5,
+        });
+
+        let cY = cursorY + headerBarH + 14;
+        for (const cl of chunk) {
           p.texts.push({
             text: cl,
             x: marginX + 12,
             y: cY,
             fontSize: 9,
             fontWeight: '400',
-            color: palette.textSecondary,
+            color: palette.textPrimary,
             isMono: true,
           });
           cY += lineH;
         }
+
         cursorY += boxH + 8;
-      } else {
-        // Long code block: stream line by line across pages
-        for (const cl of codeLines) {
-          if (!ensureSpace(lineH + 2)) break;
-          current.page.texts.push({
-            text: cl,
-            x: marginX + 10,
-            y: cursorY + 11,
-            fontSize: 9,
-            fontWeight: '400',
-            color: palette.textSecondary,
-            isMono: true,
-          });
-          cursorY += lineH;
-        }
-        cursorY += 8;
+        lineCursor += chunk.length;
+        isContinuation = true;
       }
+      if (stopped) break;
       continue;
     }
 
-    // Ordered, Unordered, and Task List Output
+    // Ordered, Unordered, and Task List Output with Vector Checkboxes & Rich Inline Formatting
     if (block.kind === 'list-block') {
       const items = block.listItems || [];
-      mCtx.font = `400 10.5px ${fontStack}`;
       const lineH = 17.5;
+      const fontSize = 10.5;
       const indentX = 18;
+      const itemMaxW = contentW - indentX - 4;
       let stopped = false;
 
       for (let idx = 0; idx < items.length; idx++) {
         const item = items[idx];
-        const marker = item.task
-          ? item.checked
-            ? '☑ '
-            : '☐ '
-          : block.ordered
-          ? `${idx + 1}. `
-          : '• ';
-        const itemLines = wrapCanvasParagraphs(
+        const richLines = layoutRichMarkdownLines(
           mCtx,
           item.text || '',
-          contentW - indentX - 6
+          fontSize,
+          fontStack,
+          itemMaxW,
+          itemMaxW,
+          sortedAnns,
+          false
         );
 
-        for (let lIdx = 0; lIdx < itemLines.length; lIdx++) {
+        for (let lIdx = 0; lIdx < richLines.length; lIdx++) {
           if (!ensureSpace(lineH)) {
             stopped = true;
             break;
           }
           const p = current.page;
           if (lIdx === 0) {
-            p.texts.push({
-              text: marker,
-              x: marginX + 2,
-              y: cursorY + 13,
-              fontSize: 10,
-              fontWeight: '600',
-              color: palette.accent,
-            });
+            if (item.task) {
+              // Draw genuine vector checkbox square + vector checkmark matching MarkdownRenderer.tsx
+              const boxX = marginX + 2;
+              const boxY = cursorY + 3.5;
+              const boxSz = 9.5;
+              p.rects.push({
+                x: boxX,
+                y: boxY,
+                w: boxSz,
+                h: boxSz,
+                rx: 2,
+                fill: item.checked ? palette.accent : palette.bgPage,
+                stroke: item.checked ? palette.accent : palette.textMuted,
+                lineWidth: 0.9,
+              });
+              if (item.checked) {
+                const checkColor =
+                  config.themeStyle === 'espresso' ? '#211A15' : '#FFFFFF';
+                p.lines.push(
+                  {
+                    x1: boxX + 2.2,
+                    y1: boxY + 5.0,
+                    x2: boxX + 4.2,
+                    y2: boxY + 7.2,
+                    stroke: checkColor,
+                    lineWidth: 1.2,
+                  },
+                  {
+                    x1: boxX + 4.2,
+                    y1: boxY + 7.2,
+                    x2: boxX + 7.6,
+                    y2: boxY + 2.5,
+                    stroke: checkColor,
+                    lineWidth: 1.2,
+                  }
+                );
+              }
+            } else {
+              const marker = block.ordered ? `${idx + 1}.` : '•';
+              p.texts.push({
+                text: marker,
+                x: marginX + 2,
+                y: cursorY + 13,
+                fontSize: 10,
+                fontWeight: '600',
+                color: palette.accent,
+              });
+            }
           }
-          p.texts.push({
-            text: itemLines[lIdx],
-            x: marginX + indentX,
-            y: cursorY + 13,
-            fontSize: 10.5,
-            fontWeight: '400',
-            color: palette.textPrimary,
-          });
+
+          drawRichMarkdownLine(
+            p,
+            richLines[lIdx],
+            marginX + indentX,
+            cursorY + 13,
+            fontSize,
+            '400',
+            palette.textPrimary,
+            palette,
+            config.themeStyle
+          );
           cursorY += lineH;
         }
         if (stopped) break;
@@ -2767,10 +3317,31 @@ export function renderJsPdfPages(
       continue;
     }
 
+    // Blockquotes & GitHub-style Callouts (> [!NOTE], [!TIP], [!IMPORTANT], [!WARNING], [!CAUTION])
     if (block.kind === 'blockquote') {
-      mCtx.font = `400 10px ${fontStack}`;
-      const qLines = wrapCanvasParagraphs(mCtx, block.text || '', contentW - 24);
-      const boxH = qLines.length * 16 + 12;
+      const rawQuote = (block.text || '').replace(/^\s*>+\s?/gm, '').trim();
+      const alertMatch = rawQuote.match(
+        /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*\n?([\s\S]*)$/i
+      );
+      const alertType = alertMatch ? alertMatch[1].toUpperCase() : null;
+      const bodyRaw = (alertMatch ? alertMatch[2] : rawQuote).trim();
+
+      const qFontSize = 10;
+      const qLineH = 16;
+      const innerAvailW = contentW - 26;
+      const qLines = layoutRichMarkdownLines(
+        mCtx,
+        bodyRaw,
+        qFontSize,
+        fontStack,
+        innerAvailW,
+        innerAvailW,
+        sortedAnns,
+        false
+      );
+
+      const alertHeaderH = alertType ? 18 : 0;
+      const boxH = alertHeaderH + Math.max(1, qLines.length) * qLineH + 14;
       if (!ensureSpace(boxH + 8)) break;
       const p = current.page;
 
@@ -2779,23 +3350,48 @@ export function renderJsPdfPages(
         y: cursorY,
         w: contentW,
         h: boxH,
-        rx: 6,
+        rx: 8,
         fill: palette.bgSurface,
         stroke: palette.border,
         lineWidth: 0.6,
       });
 
+      // Left accent bar
+      p.rects.push({
+        x: marginX,
+        y: cursorY + 4,
+        w: 3,
+        h: Math.max(8, boxH - 8),
+        rx: 1.5,
+        fill: palette.accent,
+      });
+
       let qY = cursorY + 16;
-      for (const l of qLines) {
+      if (alertType) {
         p.texts.push({
-          text: l,
+          text: `● ${alertType}`,
           x: marginX + 12,
-          y: qY,
-          fontSize: 10,
-          fontWeight: '400',
-          color: palette.textSecondary,
+          y: qY - 1,
+          fontSize: 9.5,
+          fontWeight: '700',
+          color: palette.accent,
         });
-        qY += 16;
+        qY += alertHeaderH;
+      }
+
+      for (const l of qLines) {
+        drawRichMarkdownLine(
+          p,
+          l,
+          marginX + 12,
+          qY,
+          qFontSize,
+          '400',
+          palette.textSecondary,
+          palette,
+          config.themeStyle
+        );
+        qY += qLineH;
       }
       cursorY += boxH + 8;
       continue;
@@ -2816,26 +3412,41 @@ export function renderJsPdfPages(
       continue;
     }
 
+    // Body Paragraph with 2-em first-line indent (line 0 only!) & full width on lines 1+
     if (block.kind === 'paragraph') {
-      const cleanPara = (block.text || '').replace(/^[\s\u3000]+/, '').replace(/\u3000/g, '  ');
-      mCtx.font = `400 10.8px ${fontStack}`;
+      const cleanPara = (block.text || '')
+        .replace(/^[\s\u3000]+/, '')
+        .replace(/\u3000/g, '  ');
+      const pFontSize = 10.8;
       const firstLineIndentPt = 21.6;
-      // Wrap paragraph with 2-em indent on the first line using coordinate offset instead of \u3000
-      const pLines = wrapCanvasParagraphs(mCtx, cleanPara, contentW - firstLineIndentPt);
       const lineH = 18.5;
+
+      const pLines = layoutRichMarkdownLines(
+        mCtx,
+        cleanPara,
+        pFontSize,
+        fontStack,
+        contentW - firstLineIndentPt,
+        contentW,
+        sortedAnns,
+        false
+      );
 
       for (let lineIdx = 0; lineIdx < pLines.length; lineIdx++) {
         const line = pLines[lineIdx];
         if (!ensureSpace(lineH)) break;
         const p = current.page;
-        p.texts.push({
-          text: line,
-          x: marginX + (lineIdx === 0 ? firstLineIndentPt : 0),
-          y: cursorY + 13,
-          fontSize: 10.8,
-          fontWeight: '400',
-          color: palette.textPrimary,
-        });
+        drawRichMarkdownLine(
+          p,
+          line,
+          marginX + (lineIdx === 0 ? firstLineIndentPt : 0),
+          cursorY + 13,
+          pFontSize,
+          '400',
+          palette.textPrimary,
+          palette,
+          config.themeStyle
+        );
         cursorY += lineH;
       }
       cursorY += 6;
@@ -2905,15 +3516,15 @@ function hexToRgbTuple(hex: string): [number, number, number] {
   ];
 }
 
-let cachedVectorCjkFontBase64: string | null = null;
-let inFlightCjkFontPromise: Promise<string | null> | null = null;
+const cachedCjkFontsByKey = new Map<'serif' | 'sans', string>();
+const inFlightCjkFontPromises = new Map<'serif' | 'sans', Promise<string | null>>();
 
 /**
  * Verifies that an ArrayBuffer is a genuine TrueType (.ttf) font with `0x00010000` or `'true'`
  * magic bytes (and NOT an OpenType CFF `.otf` `'OTTO'` or `.woff`/`.woff2` which jsPDF cannot parse).
  */
 function isValidTrueTypeFontBuffer(buf: ArrayBuffer | null | undefined): buf is ArrayBuffer {
-  if (!buf || buf.byteLength < 10000) return false;
+  if (!buf || buf.byteLength < 100000) return false;
   const view = new DataView(buf);
   const sfntVersion = view.getUint32(0, false);
   return sfntVersion === 0x00010000 || sfntVersion === 0x74727565;
@@ -2929,11 +3540,80 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
   return btoa(binary);
 }
 
-export async function loadCjkFontBase64ForJsPdf(): Promise<string | null> {
-  if (cachedVectorCjkFontBase64) return cachedVectorCjkFontBase64;
-  if (inFlightCjkFontPromise) return inFlightCjkFontPromise;
+async function getCachedFontFromIndexedDb(key: string): Promise<ArrayBuffer | null> {
+  if (typeof indexedDB === 'undefined') return null;
+  try {
+    return await new Promise<ArrayBuffer | null>((resolve) => {
+      const req = indexedDB.open('roast_reed_pdf_font_cache_v1', 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('ttf_fonts')) {
+          db.createObjectStore('ttf_fonts');
+        }
+      };
+      req.onsuccess = () => {
+        try {
+          const db = req.result;
+          const tx = db.transaction('ttf_fonts', 'readonly');
+          const store = tx.objectStore('ttf_fonts');
+          const getReq = store.get(key);
+          getReq.onsuccess = () => {
+            const val = getReq.result as ArrayBuffer | undefined;
+            resolve(isValidTrueTypeFontBuffer(val) ? val : null);
+          };
+          getReq.onerror = () => resolve(null);
+        } catch {
+          resolve(null);
+        }
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
 
-  inFlightCjkFontPromise = (async () => {
+async function saveCachedFontToIndexedDb(key: string, buf: ArrayBuffer): Promise<void> {
+  if (typeof indexedDB === 'undefined') return;
+  try {
+    await new Promise<void>((resolve) => {
+      const req = indexedDB.open('roast_reed_pdf_font_cache_v1', 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('ttf_fonts')) {
+          db.createObjectStore('ttf_fonts');
+        }
+      };
+      req.onsuccess = () => {
+        try {
+          const db = req.result;
+          const tx = db.transaction('ttf_fonts', 'readwrite');
+          const store = tx.objectStore('ttf_fonts');
+          store.put(buf, key);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+        } catch {
+          resolve();
+        }
+      };
+      req.onerror = () => resolve();
+    });
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+export async function loadCjkFontBase64ForJsPdf(
+  fontStyle: 'serif' | 'kaiti' | 'sans' = 'serif'
+): Promise<string | null> {
+  const familyKey: 'serif' | 'sans' = fontStyle === 'sans' ? 'sans' : 'serif';
+  const memCached = cachedCjkFontsByKey.get(familyKey);
+  if (memCached) return memCached;
+
+  const existingPromise = inFlightCjkFontPromises.get(familyKey);
+  if (existingPromise) return existingPromise;
+
+  const promise = (async () => {
     // 1. Check if the user has uploaded a valid TrueType (.ttf) font in IndexedDB
     try {
       const dbReq = indexedDB.open('roast_reed_db', 1);
@@ -2958,30 +3638,47 @@ export async function loadCjkFontBase64ForJsPdf(): Promise<string | null> {
       });
 
       if (isValidTrueTypeFontBuffer(customFontBuf)) {
-        cachedVectorCjkFontBase64 = arrayBufferToBase64(customFontBuf);
-        return cachedVectorCjkFontBase64;
+        const b64 = arrayBufferToBase64(customFontBuf);
+        cachedCjkFontsByKey.set(familyKey, b64);
+        return b64;
       }
     } catch {
       // ignore IndexedDB error
     }
 
-    // 2. Fetch a genuine TrueType (.ttf) Simplified Chinese font (magic 0x00010000) for jsPDF Identity-H Unicode embedding
-    const trueTypeCdnUrls = [
-      'https://fonts.gstatic.com/s/notosanssc/v37/k3kCo84MPvpLmixcA63oeAL7Iqp5IZJF9bmaG9_FnYxNbPzS5HE.ttf',
-      'https://fonts.gstatic.com/s/notoserifsc/v31/H4cyBXePl9DZ0Xe7gG9cyOj7uK2-n-D2rd4FY7SCqyWv.ttf',
-    ];
+    // 2. Check our dedicated persistent TrueType font cache in IndexedDB
+    const idbCachedBuf = await getCachedFontFromIndexedDb(familyKey);
+    if (isValidTrueTypeFontBuffer(idbCachedBuf)) {
+      const b64 = arrayBufferToBase64(idbCachedBuf);
+      cachedCjkFontsByKey.set(familyKey, b64);
+      return b64;
+    }
+
+    // 3. Fetch a genuine TrueType (.ttf) Simplified Chinese font (magic 0x00010000) for jsPDF Identity-H Unicode embedding
+    const trueTypeCdnUrls =
+      familyKey === 'sans'
+        ? [
+            'https://fonts.gstatic.com/s/notosanssc/v37/k3kCo84MPvpLmixcA63oeAL7Iqp5IZJF9bmaG9_FnYxNbPzS5HE.ttf',
+            'https://fonts.gstatic.com/s/notoserifsc/v31/H4cyBXePl9DZ0Xe7gG9cyOj7uK2-n-D2rd4FY7SCqyWv.ttf',
+          ]
+        : [
+            'https://fonts.gstatic.com/s/notoserifsc/v31/H4cyBXePl9DZ0Xe7gG9cyOj7uK2-n-D2rd4FY7SCqyWv.ttf',
+            'https://fonts.gstatic.com/s/notosanssc/v37/k3kCo84MPvpLmixcA63oeAL7Iqp5IZJF9bmaG9_FnYxNbPzS5HE.ttf',
+          ];
 
     for (const url of trueTypeCdnUrls) {
       try {
         const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 12000);
+        const timer = setTimeout(() => ctrl.abort(), 20000);
         const res = await fetch(url, { signal: ctrl.signal });
         clearTimeout(timer);
         if (res.ok) {
           const buf = await res.arrayBuffer();
           if (isValidTrueTypeFontBuffer(buf)) {
-            cachedVectorCjkFontBase64 = arrayBufferToBase64(buf);
-            return cachedVectorCjkFontBase64;
+            await saveCachedFontToIndexedDb(familyKey, buf);
+            const b64 = arrayBufferToBase64(buf);
+            cachedCjkFontsByKey.set(familyKey, b64);
+            return b64;
           }
         }
       } catch {
@@ -2991,142 +3688,106 @@ export async function loadCjkFontBase64ForJsPdf(): Promise<string | null> {
 
     return null;
   })().finally(() => {
-    inFlightCjkFontPromise = null;
+    inFlightCjkFontPromises.delete(familyKey);
   });
 
-  return inFlightCjkFontPromise;
+  inFlightCjkFontPromises.set(familyKey, promise);
+  return promise;
 }
 
-export function warmUpCjkPdfFont(): void {
-  // No-op or optional background warm-up; PDF export now uses instant 2x Retina Canvas + jsPDF pipeline
-}
-
-async function decodePageImagesWithTimeout(
-  pages: VectorPdfPage[],
-  timeoutMs = 350
-): Promise<Map<string, HTMLImageElement>> {
-  const map = new Map<string, HTMLImageElement>();
-  if (typeof Image === 'undefined') return map;
-
-  const uniqueUrls = new Set<string>();
-  for (const p of pages) {
-    for (const img of p.images) {
-      const src = img.pngDataUrl || img.svgDataUrl;
-      if (src) uniqueUrls.add(src);
-    }
-  }
-  if (uniqueUrls.size === 0) return map;
-
-  await Promise.race([
-    Promise.all(
-      Array.from(uniqueUrls).map(
-        (src) =>
-          new Promise<void>((resolve) => {
-            const el = new Image();
-            el.crossOrigin = 'anonymous';
-            el.onload = () => {
-              map.set(src, el);
-              resolve();
-            };
-            el.onerror = () => resolve();
-            el.src = src;
-          })
-      )
-    ),
-    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-  ]);
-
-  return map;
-}
-
-function renderVectorPageToRetinaCanvasJpeg(
-  vp: VectorPdfPage,
-  fontStack: string,
-  decodedImages: Map<string, HTMLImageElement>
-): string {
-  const scale = 2.0; // 2x Retina A4 (1190 x 1684 px)
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.round(vp.widthPt * scale);
-  canvas.height = Math.round(vp.heightPt * scale);
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return '';
-
-  ctx.scale(scale, scale);
-
-  // 1. Page Background
-  ctx.fillStyle = vp.bgColor;
-  ctx.fillRect(0, 0, vp.widthPt, vp.heightPt);
-
-  // 2. Rectangles, Cards, Table Cells & Frames
-  for (const r of vp.rects) {
-    ctx.save();
-    ctx.beginPath();
-    if (r.rx && r.rx > 0 && typeof ctx.roundRect === 'function') {
-      ctx.roundRect(r.x, r.y, r.w, r.h, r.rx);
-    } else {
-      ctx.rect(r.x, r.y, r.w, r.h);
-    }
-    if (r.fill) {
-      ctx.fillStyle = r.fill;
-      ctx.fill();
-    }
-    if (r.stroke) {
-      ctx.strokeStyle = r.stroke;
-      ctx.lineWidth = r.lineWidth ?? 1;
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  // 3. Lines & Dividers
-  for (const l of vp.lines) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(l.x1, l.y1);
-    ctx.lineTo(l.x2, l.y2);
-    ctx.strokeStyle = l.stroke;
-    ctx.lineWidth = l.lineWidth;
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  // 4. Embedded Mermaid Diagrams
-  for (const img of vp.images) {
-    const src = img.pngDataUrl || img.svgDataUrl;
-    const decoded = src ? decodedImages.get(src) : undefined;
-    if (decoded) {
-      try {
-        ctx.drawImage(decoded, img.x, img.y, img.w, img.h);
-      } catch {
-        // ignore draw error
-      }
-    }
-  }
-
-  // 5. Crisp Typography (Supports Serif, Kaiti, Sans, and Monospace)
-  for (const t of vp.texts) {
-    const cleanText = (t.text || '').replace(/\u3000/g, '  ');
-    if (!cleanText) continue;
-    ctx.save();
-    const family = t.isMono
-      ? '"JetBrains Mono", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", monospace, sans-serif'
-      : fontStack;
-    ctx.font = `${t.fontWeight} ${t.fontSize}px ${family}`;
-    ctx.fillStyle = t.color;
-    ctx.textAlign = t.align === 'right' ? 'right' : t.align === 'center' ? 'center' : 'left';
-    ctx.textBaseline = 'alphabetic';
-    ctx.fillText(cleanText, t.x, t.y);
-    ctx.restore();
-  }
-
-  return canvas.toDataURL('image/jpeg', 0.92);
+export function warmUpCjkPdfFont(fontStyle: 'serif' | 'kaiti' | 'sans' = 'serif'): void {
+  if (typeof window === 'undefined') return;
+  void loadCjkFontBase64ForJsPdf(fontStyle);
 }
 
 /**
- * Generates and immediately downloads a multi-page A4 PDF (`.pdf`) via jsPDF.
- * Uses a fast 2x Retina Canvas + jsPDF pipeline so it never stalls on external 10MB font downloads,
- * works 100% offline, preserves browser transient user-gesture activation inside iframes,
- * and faithfully renders Serif/Kaiti/Sans Chinese fonts, tables, and Mermaid diagrams.
+ * Extracts text nodes from a Mermaid SVG so they can be written as an invisible selectable/searchable
+ * text layer (`renderingMode: 'invisible'`, PDF `3 Tr`) over the diagram in jsPDF.
+ */
+function extractSearchableTextsFromMermaidSvg(
+  svgMarkup: string,
+  targetX: number,
+  targetY: number,
+  targetW: number,
+  targetH: number
+): { text: string; x: number; y: number; fontSize: number }[] {
+  const results: { text: string; x: number; y: number; fontSize: number }[] = [];
+  if (!svgMarkup || typeof DOMParser === 'undefined') return results;
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(svgMarkup, 'image/svg+xml');
+    const svgEl = doc.querySelector('svg');
+    if (!svgEl) return results;
+
+    let vbMinX = 0;
+    let vbMinY = 0;
+    let vbW = targetW || 560;
+    let vbH = targetH || 260;
+    const vbAttr = svgEl.getAttribute('viewBox');
+    if (vbAttr) {
+      const parts = vbAttr.trim().split(/[\s,]+/).map(Number);
+      if (parts.length === 4 && !parts.some(isNaN) && parts[2] > 0 && parts[3] > 0) {
+        vbMinX = parts[0];
+        vbMinY = parts[1];
+        vbW = parts[2];
+        vbH = parts[3];
+      }
+    }
+
+    const scale = Math.min(targetW / vbW, targetH / vbH);
+    const offsetX = targetX + (targetW - vbW * scale) / 2;
+    const offsetY = targetY + (targetH - vbH * scale) / 2;
+
+    svgEl.querySelectorAll('text').forEach((tEl) => {
+      const label = (tEl.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!label) return;
+      let tx = parseFloat(tEl.getAttribute('x') || '0') || 0;
+      let ty = parseFloat(tEl.getAttribute('y') || '0') || 0;
+
+      // Accumulate translate(x, y) transforms from ancestor <g> elements
+      let curr: Element | null = tEl;
+      while (curr && curr !== svgEl) {
+        const tr = curr.getAttribute('transform');
+        if (tr) {
+          const m = tr.match(/translate\(\s*([-\d.]+)(?:[\s,]+([-\d.]+))?\s*\)/i);
+          if (m) {
+            tx += parseFloat(m[1]) || 0;
+            ty += parseFloat(m[2] || '0') || 0;
+          }
+        }
+        curr = curr.parentElement;
+      }
+
+      const pdfX = offsetX + (tx - vbMinX) * scale;
+      const pdfY = offsetY + (ty - vbMinY) * scale;
+      if (
+        pdfX >= targetX &&
+        pdfX <= targetX + targetW &&
+        pdfY >= targetY &&
+        pdfY <= targetY + targetH
+      ) {
+        results.push({
+          text: label,
+          x: pdfX,
+          y: pdfY,
+          fontSize: Math.max(6, Math.min(11, 10 * scale)),
+        });
+      }
+    });
+  } catch {
+    // ignore parse errors
+  }
+  return results;
+}
+
+/**
+ * Generates and downloads a 100% Vector Text & Vector Shape A4 PDF (`.pdf`) via jsPDF.
+ * - Embeds genuine TrueType (`.ttf`) CJK Unicode font (`Identity-H`) so every Chinese & English
+ *   character is real selectable, copyable, searchable (`Ctrl+F`) vector text (`pdf.text`).
+ * - Draws all page stationery borders, cards, callouts, code blocks, table cells, checkboxes, and
+ *   dividers as native PDF vector graphics (`pdf.roundedRect`, `pdf.rect`, `pdf.line`).
+ * - Renders 100% of Mermaid diagrams with full warm-up and embeds an invisible searchable vector text
+ *   layer over diagram labels, achieving 100% visual and structural consistency with the page display.
  */
 export async function exportBookWithJsPdf(
   book: Book,
@@ -3134,15 +3795,32 @@ export async function exportBookWithJsPdf(
   dailyStats: ReadingStatsDaily[],
   config: ExportConfig
 ): Promise<JsPdfPreviewResult> {
-  // Warm up Mermaid diagrams with a tight 450ms cap so we never lose browser user-gesture activation;
-  // any diagram not yet warmed uses the synchronous pure-SVG generator automatically.
-  await Promise.race([
-    warmUpMermaidDiagramsForContent(book.content, config.themeStyle),
-    new Promise<void>((resolve) => setTimeout(resolve, 450)),
+  // 1. Warm up all Mermaid diagrams AND load the CJK TrueType font in parallel
+  const [, cjkFontBase64] = await Promise.all([
+    Promise.race([
+      warmUpMermaidDiagramsForContent(book.content, config.themeStyle),
+      new Promise<void>((resolve) => setTimeout(resolve, 10000)),
+    ]),
+    loadCjkFontBase64ForJsPdf(config.fontStyle || 'serif'),
   ]);
 
-  // Render all pages with Infinity limit so long books are never truncated
+  // 2. Render all pages with Infinity limit so preview and downloaded PDF match 100%
   const rendered = renderJsPdfPages(book, annotations, dailyStats, config, Infinity);
+  const palette = THEME_PALETTES[config.themeStyle] || THEME_PALETTES.parchment;
+
+  // Ensure every Mermaid diagram on every page has its 3x PNG data URL ready for jsPDF
+  for (const vp of rendered.vectorPages) {
+    for (const img of vp.images) {
+      if (!img.pngDataUrl && img.svgMarkup) {
+        img.pngDataUrl = await rasterizePureSvgToPngDataUrl(
+          img.svgMarkup,
+          Math.max(320, Math.round(img.w * 2)),
+          Math.max(160, Math.round(img.h * 2)),
+          palette.bgSurface
+        );
+      }
+    }
+  }
 
   const safeTitle = (book.title || '典藏手稿').replace(/[\\/:*?"<>|]/g, '');
   const parts: string[] = [];
@@ -3151,15 +3829,6 @@ export async function exportBookWithJsPdf(
   if (config.includeExcerpts ?? config.includeAnnotations) parts.push('书摘');
   const suffix = parts.length > 0 ? parts.join('+') : '典藏';
   const filename = `${safeTitle}-${suffix}.pdf`;
-
-  const fontStack =
-    config.fontStyle === 'kaiti'
-      ? '"LXGW WenKai", "Kaiti SC", "STKaiti", "KaiTi", "Noto Serif SC", serif'
-      : config.fontStyle === 'sans'
-      ? '"Plus Jakarta Sans", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif'
-      : '"Noto Serif SC", "Songti SC", "Lora", Georgia, serif';
-
-  const decodedImages = await decodePageImagesWithTimeout(rendered.vectorPages, 350);
 
   const pdf = new jsPDF({
     orientation: 'portrait',
@@ -3174,27 +3843,129 @@ export async function exportBookWithJsPdf(
     author: book.author,
   });
 
+  let activeFontName = 'helvetica';
+  if (cjkFontBase64) {
+    try {
+      const vfsFile =
+        config.fontStyle === 'sans' ? 'NotoSansSC-Regular.ttf' : 'NotoSerifSC-Regular.ttf';
+      const fontName = config.fontStyle === 'sans' ? 'NotoSansSC' : 'NotoSerifSC';
+      pdf.addFileToVFS(vfsFile, cjkFontBase64);
+      pdf.addFont(vfsFile, fontName, 'normal', 'Identity-H');
+      pdf.setFont(fontName, 'normal');
+      activeFontName = fontName;
+    } catch {
+      activeFontName = 'helvetica';
+    }
+  }
+
   rendered.vectorPages.forEach((vp, pageIdx) => {
     if (pageIdx > 0) {
       pdf.addPage('a4', 'portrait');
     }
 
-    const pageJpegDataUrl = renderVectorPageToRetinaCanvasJpeg(vp, fontStack, decodedImages);
-    if (pageJpegDataUrl) {
-      pdf.addImage(
-        pageJpegDataUrl,
-        'JPEG',
-        0,
-        0,
-        vp.widthPt,
-        vp.heightPt,
-        `page_${pageIdx + 1}`,
-        'FAST'
-      );
-    } else {
-      const [bgR, bgG, bgB] = hexToRgbTuple(vp.bgColor);
-      pdf.setFillColor(bgR, bgG, bgB);
-      pdf.rect(0, 0, vp.widthPt, vp.heightPt, 'F');
+    // 1. Vector Page Background
+    const [bgR, bgG, bgB] = hexToRgbTuple(vp.bgColor);
+    pdf.setFillColor(bgR, bgG, bgB);
+    pdf.rect(0, 0, vp.widthPt, vp.heightPt, 'F');
+
+    // 2. Vector Rectangles, Cards, Callout Bars, Highlights, Code Pills & Table Cells
+    for (const r of vp.rects) {
+      const hasFill = Boolean(r.fill);
+      const hasStroke = Boolean(r.stroke);
+      if (!hasFill && !hasStroke) continue;
+
+      if (r.fill) {
+        const [fr, fg, fb] = hexToRgbTuple(r.fill);
+        pdf.setFillColor(fr, fg, fb);
+      }
+      if (r.stroke) {
+        const [sr, sg, sb] = hexToRgbTuple(r.stroke);
+        pdf.setDrawColor(sr, sg, sb);
+        pdf.setLineWidth(r.lineWidth ?? 1);
+      }
+
+      const style = hasFill && hasStroke ? 'FD' : hasFill ? 'F' : 'S';
+      if (r.rx && r.rx > 0) {
+        pdf.roundedRect(r.x, r.y, r.w, r.h, r.rx, r.rx, style);
+      } else {
+        pdf.rect(r.x, r.y, r.w, r.h, style);
+      }
+    }
+
+    // 3. Vector Lines, Table Borders, Strikethroughs & Checkmarks
+    for (const l of vp.lines) {
+      const [lr, lg, lb] = hexToRgbTuple(l.stroke);
+      pdf.setDrawColor(lr, lg, lb);
+      pdf.setLineWidth(l.lineWidth);
+      pdf.line(l.x1, l.y1, l.x2, l.y2);
+    }
+
+    // 4. Mermaid Diagrams + Invisible Searchable Vector Text Layer
+    for (const img of vp.images) {
+      if (img.pngDataUrl) {
+        try {
+          pdf.addImage(
+            img.pngDataUrl,
+            'PNG',
+            img.x,
+            img.y,
+            img.w,
+            img.h,
+            undefined,
+            'FAST'
+          );
+        } catch {
+          // ignore image embed error
+        }
+      }
+      if (img.svgMarkup && activeFontName !== 'helvetica') {
+        const diagTexts = extractSearchableTextsFromMermaidSvg(
+          img.svgMarkup,
+          img.x,
+          img.y,
+          img.w,
+          img.h
+        );
+        pdf.setFont(activeFontName, 'normal');
+        for (const dt of diagTexts) {
+          pdf.setFontSize(dt.fontSize);
+          pdf.text(dt.text, dt.x, dt.y, {
+            align: 'center',
+            baseline: 'middle',
+            renderingMode: 'invisible',
+          });
+        }
+      }
+    }
+
+    // 5. 100% Vector Text (Headings, Paragraphs, Bold/Code Runs, Lists, Callouts, Tables, Footers)
+    pdf.setFont(activeFontName, 'normal');
+    for (const t of vp.texts) {
+      const cleanText = (t.text || '').replace(/\u3000/g, '  ');
+      if (!cleanText) continue;
+
+      const [tr, tg, tb] = hexToRgbTuple(t.color);
+      pdf.setTextColor(tr, tg, tb);
+      pdf.setFontSize(t.fontSize);
+
+      const isBold = t.fontWeight === '700' || t.fontWeight === '600';
+      if (isBold) {
+        pdf.setDrawColor(tr, tg, tb);
+        pdf.setLineWidth(
+          t.fontWeight === '700' ? t.fontSize * 0.028 : t.fontSize * 0.016
+        );
+        pdf.text(cleanText, t.x, t.y, {
+          align: t.align || 'left',
+          baseline: 'alphabetic',
+          renderingMode: 'fillThenStroke',
+        });
+      } else {
+        pdf.text(cleanText, t.x, t.y, {
+          align: t.align || 'left',
+          baseline: 'alphabetic',
+          renderingMode: 'fill',
+        });
+      }
     }
   });
 
@@ -3202,7 +3973,3 @@ export async function exportBookWithJsPdf(
   triggerBlobDownload(filename, pdfBlob);
   return rendered;
 }
-
-
-
-

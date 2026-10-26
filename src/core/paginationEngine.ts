@@ -747,3 +747,231 @@ export function findChapterTitleAtOffset(chapters: Chapter[], offset: number): s
   }
   return chapters[0].title;
 }
+
+export interface InstalledSystemFont {
+  family: string;
+  label: string;
+  category: 'serif' | 'sans' | 'kaiti' | 'other';
+  detected: boolean;
+}
+
+const CANDIDATE_SYSTEM_FONTS: {
+  family: string;
+  aliases: string[];
+  label: string;
+  category: 'serif' | 'sans' | 'kaiti' | 'other';
+}[] = [
+  { family: 'Microsoft YaHei', aliases: ['微软雅黑', 'Microsoft YaHei UI'], label: '微软雅黑', category: 'sans' },
+  { family: 'PingFang SC', aliases: ['苹方-简', 'PingFang TC'], label: '苹果苹方 (PingFang SC)', category: 'sans' },
+  { family: 'SimSun', aliases: ['宋体', 'NSimSun', '新宋体'], label: '中易宋体 (SimSun)', category: 'serif' },
+  { family: 'Songti SC', aliases: ['宋体-简', 'STSongti-SC-Regular'], label: '苹果宋体 (Songti SC)', category: 'serif' },
+  { family: 'KaiTi', aliases: ['楷体', 'KaiTi_GB2312'], label: '中易楷体 (KaiTi)', category: 'kaiti' },
+  { family: 'Kaiti SC', aliases: ['楷体-简', 'STKaitiSC-Regular'], label: '苹果楷体 (Kaiti SC)', category: 'kaiti' },
+  { family: 'FangSong', aliases: ['仿宋', 'FangSong_GB2312'], label: '中易仿宋 (FangSong)', category: 'serif' },
+  { family: 'SimHei', aliases: ['黑体'], label: '中易黑体 (SimHei)', category: 'sans' },
+  { family: 'STSong', aliases: ['华文宋体'], label: '华文宋体 (STSong)', category: 'serif' },
+  { family: 'STZhongsong', aliases: ['华文中宋'], label: '华文中宋 (STZhongsong)', category: 'serif' },
+  { family: 'STKaiti', aliases: ['华文楷体'], label: '华文楷体 (STKaiti)', category: 'kaiti' },
+  { family: 'STFangsong', aliases: ['华文仿宋'], label: '华文仿宋 (STFangsong)', category: 'serif' },
+  { family: 'STXihei', aliases: ['华文细黑'], label: '华文细黑 (STXihei)', category: 'sans' },
+  { family: 'DengXian', aliases: ['等线'], label: '等线 (DengXian)', category: 'sans' },
+  { family: 'LiSu', aliases: ['隶书', 'STLiti', '华文隶书'], label: '隶书 (LiSu)', category: 'kaiti' },
+  { family: 'YouYuan', aliases: ['幼圆'], label: '幼圆 (YouYuan)', category: 'sans' },
+  { family: 'Hiragino Sans GB', aliases: ['冬青黑体简体中文'], label: '冬青黑体 (Hiragino)', category: 'sans' },
+  { family: 'LXGW WenKai', aliases: ['霞鹜文楷', 'LXGW WenKai Screen'], label: '霞鹜文楷 (LXGW WenKai)', category: 'kaiti' },
+  { family: 'Source Han Serif SC', aliases: ['思源宋体', 'Source Han Serif CN', 'Noto Serif CJK SC', 'Noto Serif SC'], label: '思源宋体 (Source Han Serif)', category: 'serif' },
+  { family: 'Source Han Sans SC', aliases: ['思源黑体', 'Source Han Sans CN', 'Noto Sans CJK SC', 'Noto Sans SC'], label: '思源黑体 (Source Han Sans)', category: 'sans' },
+  { family: 'HarmonyOS Sans SC', aliases: ['HarmonyOS Sans'], label: '鸿蒙黑体 (HarmonyOS Sans)', category: 'sans' },
+  { family: 'MiSans', aliases: ['小米兰亭'], label: '小米 MiSans', category: 'sans' },
+  { family: 'FZShuSong-Z01S', aliases: ['方正书宋简体', 'FZShuSong-Z01'], label: '方正书宋', category: 'serif' },
+  { family: 'FZKai-Z03S', aliases: ['方正楷体简体', 'FZKai-Z03'], label: '方正楷体', category: 'kaiti' },
+  { family: 'Georgia', aliases: [], label: 'Georgia (西文衬线)', category: 'serif' },
+  { family: 'Times New Roman', aliases: [], label: 'Times New Roman', category: 'serif' },
+  { family: 'Segoe UI', aliases: ['SF Pro Text', 'Roboto'], label: 'Segoe UI / 系统无衬', category: 'sans' },
+];
+
+let cachedDetectedLocalFonts: InstalledSystemFont[] | null = null;
+
+/**
+ * Probes the operating system's locally installed fonts via offscreen Canvas glyph measurement.
+ */
+export function detectInstalledLocalFonts(): InstalledSystemFont[] {
+  if (cachedDetectedLocalFonts && cachedDetectedLocalFonts.length > 0) {
+    return cachedDetectedLocalFonts;
+  }
+  if (typeof document === 'undefined') {
+    return CANDIDATE_SYSTEM_FONTS.map((c) => ({
+      family: c.family,
+      label: c.label,
+      category: c.category,
+      detected: true,
+    }));
+  }
+
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    return CANDIDATE_SYSTEM_FONTS.map((c) => ({
+      family: c.family,
+      label: c.label,
+      category: c.category,
+      detected: true,
+    }));
+  }
+
+  const testText = '天地玄黄宇宙洪荒永和九年abcMW123';
+  const baseFamilies = ['monospace', 'sans-serif', 'serif'];
+  const baseWidths: Record<string, number> = {};
+  for (const base of baseFamilies) {
+    ctx.font = `72px ${base}`;
+    baseWidths[base] = ctx.measureText(testText).width;
+  }
+
+  const isFontPresent = (fontName: string): boolean => {
+    for (const base of baseFamilies) {
+      ctx.font = `72px "${fontName}", ${base}`;
+      const w = ctx.measureText(testText).width;
+      if (Math.abs(w - baseWidths[base]) > 0.1) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const detectedList: InstalledSystemFont[] = [];
+  const fallbackList: InstalledSystemFont[] = [];
+
+  for (const candidate of CANDIDATE_SYSTEM_FONTS) {
+    const namesToTry = [candidate.family, ...candidate.aliases];
+    let matchedName: string | null = null;
+    for (const name of namesToTry) {
+      if (isFontPresent(name)) {
+        matchedName = name;
+        break;
+      }
+    }
+    if (matchedName) {
+      detectedList.push({
+        family: matchedName,
+        label: candidate.label,
+        category: candidate.category,
+        detected: true,
+      });
+    } else {
+      fallbackList.push({
+        family: candidate.family,
+        label: candidate.label,
+        category: candidate.category,
+        detected: false,
+      });
+    }
+  }
+
+  // Always show genuinely detected local OS fonts first; if the OS environment has few detected CJK fonts,
+  // also append standard system font options so users can select any local font family.
+  const combined =
+    detectedList.length >= 5
+      ? detectedList
+      : [...detectedList, ...fallbackList.slice(0, Math.max(8, 12 - detectedList.length))];
+
+  cachedDetectedLocalFonts = combined;
+  return combined;
+}
+
+/**
+ * Queries the browser's Local Font Access API (`window.queryLocalFonts()`) when supported and permitted,
+ * merging all discovered local OS font families with the Canvas-detected system fonts.
+ */
+export async function queryBrowserLocalFonts(): Promise<InstalledSystemFont[]> {
+  const baseDetected = detectInstalledLocalFonts();
+  if (typeof window === 'undefined' || !('queryLocalFonts' in window)) {
+    return baseDetected;
+  }
+
+  try {
+    const queryFn = (window as unknown as {
+      queryLocalFonts: () => Promise<Array<{ family: string; fullName?: string }>>;
+    }).queryLocalFonts;
+    const rawFonts = await queryFn();
+    if (!Array.isArray(rawFonts) || rawFonts.length === 0) {
+      return baseDetected;
+    }
+
+    const byFamily = new Map<string, InstalledSystemFont>();
+    for (const item of baseDetected) {
+      if (item.detected) {
+        byFamily.set(item.family.toLowerCase(), item);
+      }
+    }
+
+    for (const f of rawFonts) {
+      const fam = (f.family || '').trim();
+      if (!fam || fam.startsWith('.')) continue;
+      const key = fam.toLowerCase();
+      if (byFamily.has(key)) continue;
+
+      const displayLabel =
+        f.fullName && f.fullName.trim() && f.fullName.trim() !== fam
+          ? `${f.fullName.trim()} (${fam})`
+          : fam;
+      const lower = displayLabel.toLowerCase();
+      const category: 'serif' | 'sans' | 'kaiti' | 'other' =
+        lower.includes('kai') || lower.includes('楷') || lower.includes('隶')
+          ? 'kaiti'
+          : lower.includes('song') || lower.includes('serif') || lower.includes('宋') || lower.includes('明')
+          ? 'serif'
+          : lower.includes('hei') || lower.includes('sans') || lower.includes('黑') || lower.includes('雅') || lower.includes('苹')
+          ? 'sans'
+          : 'other';
+
+      byFamily.set(key, {
+        family: fam,
+        label: displayLabel,
+        category,
+        detected: true,
+      });
+    }
+
+    const merged = Array.from(byFamily.values());
+    // Sort CJK / known reading fonts to the top
+    merged.sort((a, b) => {
+      const aCjk = /[\u4e00-\u9fa5]/.test(a.label) ? 0 : 1;
+      const bCjk = /[\u4e00-\u9fa5]/.test(b.label) ? 0 : 1;
+      if (aCjk !== bCjk) return aCjk - bCjk;
+      return a.label.localeCompare(b.label, 'zh-CN');
+    });
+
+    cachedDetectedLocalFonts = merged;
+    return merged;
+  } catch {
+    return baseDetected;
+  }
+}
+
+export function resolveReaderFontFamilyCss(fontId: string): string {
+  if (fontId === 'serif-editorial') return "'Lora', 'Noto Serif SC', 'Songti SC', serif";
+  if (fontId === 'sans-warm') return "'Plus Jakarta Sans', -apple-system, sans-serif";
+  if (fontId === 'kaiti-classic') return "'LXGW WenKai', 'Kaiti SC', 'STKaiti', 'KaiTi', serif";
+  if (fontId === 'mono-tabular') return "'JetBrains Mono', monospace";
+  if (fontId.startsWith('local:')) {
+    const rawFamily = fontId.slice('local:'.length).trim();
+    return `"${rawFamily}", 'Noto Serif SC', serif`;
+  }
+  return `"${fontId}", 'Noto Serif SC', serif`;
+}
+
+export function getShortLocalFontLabel(
+  fontId: string,
+  installedFonts?: InstalledSystemFont[]
+): string {
+  if (!fontId.startsWith('local:')) return '本地字体';
+  const rawFamily = fontId.slice('local:'.length).trim();
+  if (!rawFamily) return '本地字体';
+  const list = installedFonts || cachedDetectedLocalFonts || [];
+  const matched = list.find((f) => f.family.toLowerCase() === rawFamily.toLowerCase());
+  if (matched) {
+    return matched.label.replace(/\s*\(.*?\)\s*/g, '').trim() || rawFamily;
+  }
+  return rawFamily;
+}
+

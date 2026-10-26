@@ -5,6 +5,8 @@ import {
   Bookmark,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Coffee,
   Columns2,
   Download,
@@ -55,10 +57,15 @@ import {
   ReadingStatsDaily,
 } from '../types/reader';
 import {
+  detectInstalledLocalFonts,
   findChapterTitleAtOffset,
   findPageIndexForOffset,
   getMaxColumnWidthPx,
+  getShortLocalFontLabel,
+  InstalledSystemFont,
   paginateBookContent,
+  queryBrowserLocalFonts,
+  resolveReaderFontFamilyCss,
   VirtualPage,
 } from '../core/paginationEngine';
 import {
@@ -231,6 +238,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [autoFlipProgress, setAutoFlipProgress] = useState(0);
   const [isAutoPausedByHover, setIsAutoPausedByHover] = useState(false);
   const [scrubberVisible, setScrubberVisible] = useState(false);
+  const [installedLocalFonts, setInstalledLocalFonts] = useState<InstalledSystemFont[]>(() =>
+    detectInstalledLocalFonts()
+  );
+  const [localFontPickerOpen, setLocalFontPickerOpen] = useState(false);
+  const [customLocalFontInput, setCustomLocalFontInput] = useState('');
   const touchStartPos = useRef<{ x: number; y: number; time: number } | null>(null);
   const touchSwipedRef = useRef(false);
 
@@ -446,6 +458,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
   }, [settings.theme, settings.einkFlashRefresh]);
 
+  const pageIndexRef = useRef(pageIndex);
+  pageIndexRef.current = pageIndex;
+  const isSpreadModeRef = useRef(isSpreadMode);
+  isSpreadModeRef.current = isSpreadMode;
+
   const goToPageIndex = useCallback(
     (targetIdx: number) => {
       if (totalPages === 0) return;
@@ -456,6 +473,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       if (!targetPage) return;
 
       setPageIndex(alignedIdx);
+      pageIndexRef.current = alignedIdx;
       triggerEinkRefreshIfNeeded();
 
       const charsDelta = Math.max(
@@ -488,46 +506,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       }, 9000);
     },
     [virtualPages, book.currentOffset]
-  );
-
-  const jumpToCharOffset = useCallback(
-    (charOffset: number) => {
-      const targetIdx = findPageIndexForOffset(virtualPages, charOffset);
-      if (Math.abs(targetIdx - pageIndex) > 2) {
-        recordJumpOrigin(pageIndex);
-      }
-      goToPageIndex(targetIdx);
-      if (!isPaginated && scrollContainerRef.current && book.totalChars > 0) {
-        const el = scrollContainerRef.current;
-        const targetPage = virtualPages[targetIdx];
-        const firstBlockOffset = targetPage?.paragraphs[0]?.startOffset;
-        const blockEl =
-          firstBlockOffset !== undefined
-            ? el.querySelector<HTMLElement>(`[data-start-offset="${firstBlockOffset}"]`)
-            : null;
-        if (blockEl) {
-          blockEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        } else {
-          const maxScroll = Math.max(1, el.scrollHeight - el.clientHeight);
-          el.scrollTo({
-            top: (charOffset / book.totalChars) * maxScroll,
-            behavior: 'smooth',
-          });
-        }
-      }
-      if (viewportDim.viewportWidth < 1024) {
-        setOutlineOpen(false);
-      }
-    },
-    [
-      virtualPages,
-      pageIndex,
-      recordJumpOrigin,
-      goToPageIndex,
-      isPaginated,
-      book.totalChars,
-      viewportDim.viewportWidth,
-    ]
   );
 
   // ============================================================================
@@ -626,8 +604,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     if (!item) return;
 
     if (isPaginated) {
-      const visibleStart = pageIndex;
-      const visibleEnd = isSpreadMode ? pageIndex + 1 : pageIndex;
+      const visibleStart = pageIndexRef.current;
+      const visibleEnd = isSpreadModeRef.current ? visibleStart + 1 : visibleStart;
       if (item.pageIndex < visibleStart || item.pageIndex > visibleEnd) {
         goToPageIndex(item.pageIndex);
       }
@@ -646,7 +624,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     }
-  }, [activeTtsBlockIdx, narratableBlocks, isPaginated, pageIndex, isSpreadMode, goToPageIndex]);
+  }, [activeTtsBlockIdx, narratableBlocks, isPaginated, goToPageIndex]);
 
   const speakBlockAtIndex = useCallback(
     async (
@@ -854,6 +832,90 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     [narratableBlocks, speakBlockAtIndex]
   );
 
+  const syncTtsToPage = useCallback(
+    (targetPageIdx: number) => {
+      if (!ttsBarOpen || narratableBlocks.length === 0) return;
+      const foundIdx = narratableBlocks.findIndex((b) => b.pageIndex >= targetPageIdx);
+      const targetBlockIdx = foundIdx !== -1 ? foundIdx : narratableBlocks.length - 1;
+
+      if (ttsStatus === 'playing' || ttsStatus === 'loading') {
+        speakBlockAtIndex(targetBlockIdx);
+      } else {
+        stopAllTtsPlayback(false);
+        setActiveTtsBlockIdx(targetBlockIdx);
+      }
+    },
+    [ttsBarOpen, narratableBlocks, ttsStatus, speakBlockAtIndex, stopAllTtsPlayback]
+  );
+
+  const syncTtsToOffset = useCallback(
+    (charOffset: number) => {
+      if (!ttsBarOpen || narratableBlocks.length === 0) return;
+      let foundIdx = narratableBlocks.findIndex((b) => b.block.startOffset >= charOffset);
+      if (foundIdx === -1) {
+        const targetPage = findPageIndexForOffset(virtualPages, charOffset);
+        foundIdx = narratableBlocks.findIndex((b) => b.pageIndex >= targetPage);
+      }
+      const targetBlockIdx = foundIdx !== -1 ? foundIdx : 0;
+
+      if (ttsStatus === 'playing' || ttsStatus === 'loading') {
+        speakBlockAtIndex(targetBlockIdx);
+      } else {
+        stopAllTtsPlayback(false);
+        setActiveTtsBlockIdx(targetBlockIdx);
+      }
+    },
+    [ttsBarOpen, narratableBlocks, ttsStatus, virtualPages, speakBlockAtIndex, stopAllTtsPlayback]
+  );
+
+  const jumpToCharOffset = useCallback(
+    (charOffset: number) => {
+      const targetIdx = findPageIndexForOffset(virtualPages, charOffset);
+      if (Math.abs(targetIdx - pageIndex) > 2) {
+        recordJumpOrigin(pageIndex);
+      }
+      goToPageIndex(targetIdx);
+
+      // In audiobook mode, sync speech position so it reads content immediately
+      if (ttsBarOpen) {
+        syncTtsToOffset(charOffset);
+      }
+
+      if (!isPaginated && scrollContainerRef.current && book.totalChars > 0) {
+        const el = scrollContainerRef.current;
+        const targetPage = virtualPages[targetIdx];
+        const firstBlockOffset = targetPage?.paragraphs[0]?.startOffset;
+        const blockEl =
+          firstBlockOffset !== undefined
+            ? el.querySelector<HTMLElement>(`[data-start-offset="${firstBlockOffset}"]`)
+            : null;
+        if (blockEl) {
+          blockEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+          const maxScroll = Math.max(1, el.scrollHeight - el.clientHeight);
+          el.scrollTo({
+            top: (charOffset / book.totalChars) * maxScroll,
+            behavior: 'smooth',
+          });
+        }
+      }
+      if (viewportDim.viewportWidth < 1024) {
+        setOutlineOpen(false);
+      }
+    },
+    [
+      virtualPages,
+      pageIndex,
+      recordJumpOrigin,
+      goToPageIndex,
+      ttsBarOpen,
+      syncTtsToOffset,
+      isPaginated,
+      book.totalChars,
+      viewportDim.viewportWidth,
+    ]
+  );
+
   const handleNextPage = useCallback(() => {
     if (!isPaginated) {
       if (scrollContainerRef.current) {
@@ -864,10 +926,23 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       }
       return;
     }
-    if (pageIndex + pageStep < totalPages) {
-      goToPageIndex(pageIndex + pageStep);
+    const nextIdx = pageIndex + pageStep;
+    if (nextIdx < totalPages) {
+      goToPageIndex(nextIdx);
+      if (ttsBarOpen) {
+        syncTtsToPage(nextIdx);
+      }
     }
-  }, [isPaginated, pageIndex, pageStep, totalPages, goToPageIndex, viewportDim.viewportHeight]);
+  }, [
+    isPaginated,
+    pageIndex,
+    pageStep,
+    totalPages,
+    goToPageIndex,
+    viewportDim.viewportHeight,
+    ttsBarOpen,
+    syncTtsToPage,
+  ]);
 
   const handlePrevPage = useCallback(() => {
     if (!isPaginated) {
@@ -879,10 +954,22 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       }
       return;
     }
-    if (pageIndex - pageStep >= 0) {
-      goToPageIndex(pageIndex - pageStep);
+    const prevIdx = pageIndex - pageStep;
+    if (prevIdx >= 0) {
+      goToPageIndex(prevIdx);
+      if (ttsBarOpen) {
+        syncTtsToPage(prevIdx);
+      }
     }
-  }, [isPaginated, pageIndex, pageStep, goToPageIndex, viewportDim.viewportHeight]);
+  }, [
+    isPaginated,
+    pageIndex,
+    pageStep,
+    goToPageIndex,
+    viewportDim.viewportHeight,
+    ttsBarOpen,
+    syncTtsToPage,
+  ]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -1260,11 +1347,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   };
 
   const getFontFamilyCss = (fontId: string): string => {
-    if (fontId === 'serif-editorial') return "'Lora', 'Noto Serif SC', 'Songti SC', serif";
-    if (fontId === 'sans-warm') return "'Plus Jakarta Sans', -apple-system, sans-serif";
-    if (fontId === 'kaiti-classic') return "'LXGW WenKai', 'Kaiti SC', 'STKaiti', 'KaiTi', serif";
-    if (fontId === 'mono-tabular') return "'JetBrains Mono', monospace";
-    return `'${fontId}', 'Noto Serif SC', serif`;
+    return resolveReaderFontFamilyCss(fontId);
   };
 
   const renderPageParagraphs = (page: VirtualPage | undefined) => {
@@ -1375,8 +1458,36 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   const [quickMermaidTick, setQuickMermaidTick] = useState(0);
 
+  // Sync PDF export theme & font style with the Reader's active display theme & font family
   useEffect(() => {
-    if (!exportMenuOpen || !book?.content) return;
+    const mappedTheme: ExportThemeStyle =
+      settings.theme === 'night' || settings.theme === 'candlelight'
+        ? 'espresso'
+        : settings.theme === 'eink'
+        ? 'eink'
+        : settings.theme === 'cream' || settings.theme === 'sandalwood'
+        ? 'caramel'
+        : 'parchment';
+    const mappedFont: 'serif' | 'kaiti' | 'sans' =
+      settings.fontFamily === 'kaiti' ||
+      settings.fontFamily === 'kaiti-classic' ||
+      /kai|楷|隶/i.test(settings.fontFamily)
+        ? 'kaiti'
+        : settings.fontFamily === 'sans' ||
+          settings.fontFamily === 'sans-warm' ||
+          /hei|sans|yahei|pingfang|黑|雅|苹/i.test(settings.fontFamily)
+        ? 'sans'
+        : 'serif';
+    setQuickPdfConfig((prev) => ({
+      ...prev,
+      themeStyle: mappedTheme,
+      fontStyle: mappedFont,
+    }));
+    warmUpCjkPdfFont(mappedFont);
+  }, [settings.theme, settings.fontFamily]);
+
+  useEffect(() => {
+    if (!book?.content) return;
     let cancelled = false;
     warmUpMermaidDiagramsForContent(book.content, quickPdfConfig.themeStyle)
       .then(() => {
@@ -1390,8 +1501,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   const quickPdfPreview = useMemo(() => {
     if (!exportMenuOpen) return null;
-    warmUpCjkPdfFont();
-    return renderJsPdfPages(book, annotations, dailyStats, quickPdfConfig, 12);
+    warmUpCjkPdfFont(quickPdfConfig.fontStyle || 'serif');
+    return renderJsPdfPages(book, annotations, dailyStats, quickPdfConfig, Infinity);
   }, [exportMenuOpen, book, annotations, dailyStats, quickPdfConfig, quickMermaidTick]);
 
   const handleQuickJsPdfDownload = async () => {
@@ -2418,6 +2529,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 recordJumpOrigin(pageIndex);
               }
               goToPageIndex(target);
+              if (ttsBarOpen) {
+                syncTtsToPage(target);
+              }
             }}
             className="h-2 flex-1 cursor-pointer accent-[#B4532A]"
           />
@@ -2751,35 +2865,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   }}
                   className="w-full cursor-pointer accent-[#B4532A]"
                 />
-                <div className="flex items-center justify-between gap-1">
-                  {[0.75, 1.0, 1.25, 1.5, 1.75].map((r) => (
-                    <button
-                      key={r}
-                      type="button"
-                      onClick={() => {
-                        onUpdateSettings({ ttsRate: r });
-                        if (ttsStatus === 'playing') {
-                          const idx = activeTtsBlockIdx ?? findInitialBlockIdxForCurrentView();
-                          speakBlockAtIndex(idx, { rate: r });
-                        }
-                      }}
-                      className="font-mono-tabular flex-1 rounded-md py-1 text-[10px] font-medium"
-                      style={{
-                        backgroundColor:
-                          Math.abs(ttsRate - r) < 0.03
-                            ? 'var(--accent-primary)'
-                            : 'var(--bg-page)',
-                        color:
-                          Math.abs(ttsRate - r) < 0.03
-                            ? '#FFFFFF'
-                            : 'var(--text-secondary)',
-                        border: '1px solid var(--border-subtle)',
-                      }}
-                    >
-                      {r}x
-                    </button>
-                  ))}
-                </div>
               </div>
 
               {/* Speech Pitch Control */}
@@ -2811,39 +2896,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   }}
                   className="w-full cursor-pointer accent-[#B4532A]"
                 />
-                <div className="flex items-center justify-between gap-1">
-                  {[
-                    { val: 0.8, label: '低沉 0.8' },
-                    { val: 1.0, label: '标准 1.0' },
-                    { val: 1.2, label: '清亮 1.2' },
-                  ].map((p) => (
-                    <button
-                      key={p.val}
-                      type="button"
-                      onClick={() => {
-                        onUpdateSettings({ ttsPitch: p.val });
-                        if (ttsStatus === 'playing') {
-                          const idx = activeTtsBlockIdx ?? findInitialBlockIdxForCurrentView();
-                          speakBlockAtIndex(idx, { pitch: p.val });
-                        }
-                      }}
-                      className="font-mono-tabular flex-1 rounded-md py-1 text-[10px] font-medium"
-                      style={{
-                        backgroundColor:
-                          Math.abs(ttsPitch - p.val) < 0.05
-                            ? 'var(--accent-primary)'
-                            : 'var(--bg-page)',
-                        color:
-                          Math.abs(ttsPitch - p.val) < 0.05
-                            ? '#FFFFFF'
-                            : 'var(--text-secondary)',
-                        border: '1px solid var(--border-subtle)',
-                      }}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
               </div>
             </div>
 
@@ -2880,6 +2932,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 const originOffset = jumpBackState.offset;
                 setJumpBackState(null);
                 goToPageIndex(originIdx);
+                if (ttsBarOpen) {
+                  syncTtsToPage(originIdx);
+                }
                 if (!isPaginated && scrollContainerRef.current && book.totalChars > 0) {
                   const el = scrollContainerRef.current;
                   const maxScroll = Math.max(1, el.scrollHeight - el.clientHeight);
@@ -3674,7 +3729,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               </div>
             </div>
 
-            {/* 3. Font Family & Custom Font Upload */}
+            {/* 3. Font Family & Local Installed Font Selection */}
             <div>
               <div className="mb-2 flex items-center justify-between text-xs">
                 <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>
@@ -3688,9 +3743,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     color: 'var(--accent-primary)',
                     border: '1px solid var(--border-subtle)',
                   }}
-                  title="导入本地字体 (.ttf/.otf/.woff2)"
+                  title="导入字体文件 (.ttf/.otf/.woff2)"
                 >
-                  + 导入字体
+                  + 导入字体文件
                 </button>
               </div>
               <div className="grid grid-cols-2 gap-1.5">
@@ -3698,14 +3753,15 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   { id: 'serif-editorial', label: '宋体衬线' },
                   { id: 'sans-warm', label: '黑体无衬' },
                   { id: 'kaiti-classic', label: '书房楷体' },
-                  { id: 'mono-tabular', label: '等宽手稿' },
-                  ...customFonts.map((cf) => ({ id: cf.id, label: cf.name })),
                 ].map((f) => {
                   const active = settings.fontFamily === f.id;
                   return (
                     <button
                       key={f.id}
-                      onClick={() => onUpdateSettings({ fontFamily: f.id })}
+                      onClick={() => {
+                        setLocalFontPickerOpen(false);
+                        onUpdateSettings({ fontFamily: f.id });
+                      }}
                       className="min-h-[34px] truncate rounded-xl px-2.5 py-1 text-xs font-medium transition-all"
                       style={{
                         backgroundColor: active ? 'var(--accent-primary)' : 'var(--bg-surface)',
@@ -3717,7 +3773,158 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     </button>
                   );
                 })}
+
+                {/* 4th Slot: Local Installed System Font Selector */}
+                {(() => {
+                  const isLocalActive = settings.fontFamily.startsWith('local:');
+                  const shortName = getShortLocalFontLabel(
+                    settings.fontFamily,
+                    installedLocalFonts
+                  );
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextOpen = !localFontPickerOpen;
+                        setLocalFontPickerOpen(nextOpen);
+                        queryBrowserLocalFonts().then((list) => {
+                          setInstalledLocalFonts(list);
+                        });
+                        if (!isLocalActive && installedLocalFonts.length > 0) {
+                          onUpdateSettings({
+                            fontFamily: `local:${installedLocalFonts[0].family}`,
+                          });
+                        }
+                      }}
+                      className="flex min-h-[34px] items-center justify-center gap-1 truncate rounded-xl px-2.5 py-1 text-xs font-medium transition-all"
+                      style={{
+                        backgroundColor: isLocalActive
+                          ? 'var(--accent-primary)'
+                          : 'var(--bg-surface)',
+                        color: isLocalActive ? '#FFFFFF' : 'var(--text-primary)',
+                        border: '1px solid var(--border-subtle)',
+                      }}
+                      title="选择本机已安装的系统字体"
+                    >
+                      <span className="truncate">
+                        {isLocalActive ? `本地 · ${shortName}` : '本地已装字体'}
+                      </span>
+                      <ChevronDown className="h-3 w-3 shrink-0 opacity-80" />
+                    </button>
+                  );
+                })()}
+
+                {customFonts.map((cf) => {
+                  const active = settings.fontFamily === cf.id;
+                  return (
+                    <button
+                      key={cf.id}
+                      onClick={() => {
+                        setLocalFontPickerOpen(false);
+                        onUpdateSettings({ fontFamily: cf.id });
+                      }}
+                      className="min-h-[34px] truncate rounded-xl px-2.5 py-1 text-xs font-medium transition-all"
+                      style={{
+                        backgroundColor: active ? 'var(--accent-primary)' : 'var(--bg-surface)',
+                        color: active ? '#FFFFFF' : 'var(--text-primary)',
+                        border: '1px solid var(--border-subtle)',
+                      }}
+                    >
+                      {cf.name}
+                    </button>
+                  );
+                })}
               </div>
+
+              {/* Expandable Local Installed Font Picker Panel */}
+              {(localFontPickerOpen || settings.fontFamily.startsWith('local:')) && (
+                <div
+                  className="mt-2 rounded-xl p-2.5 space-y-2"
+                  style={{
+                    backgroundColor: 'var(--bg-surface)',
+                    border: '1px solid var(--border-subtle)',
+                  }}
+                >
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                      选择本地已安装字体 ({installedLocalFonts.length})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        queryBrowserLocalFonts().then((list) => setInstalledLocalFonts(list));
+                      }}
+                      className="underline transition-opacity hover:opacity-80"
+                      style={{ color: 'var(--accent-primary)' }}
+                      title="扫描并读取本机安装的全部系统字体"
+                    >
+                      刷新本机字库
+                    </button>
+                  </div>
+
+                  <select
+                    value={
+                      settings.fontFamily.startsWith('local:')
+                        ? settings.fontFamily.slice('local:'.length)
+                        : installedLocalFonts[0]?.family || ''
+                    }
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val) {
+                        onUpdateSettings({ fontFamily: `local:${val}` });
+                      }
+                    }}
+                    className="w-full rounded-lg px-2.5 py-1.5 text-xs outline-none"
+                    style={{
+                      backgroundColor: 'var(--bg-page)',
+                      color: 'var(--text-primary)',
+                      border: '1px solid var(--border-subtle)',
+                    }}
+                  >
+                    {installedLocalFonts.map((lf) => (
+                      <option key={lf.family} value={lf.family}>
+                        {lf.label}
+                      </option>
+                    ))}
+                  </select>
+
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={customLocalFontInput}
+                      onChange={(e) => setCustomLocalFontInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && customLocalFontInput.trim()) {
+                          e.preventDefault();
+                          const fam = customLocalFontInput.trim();
+                          onUpdateSettings({ fontFamily: `local:${fam}` });
+                          setCustomLocalFontInput('');
+                        }
+                      }}
+                      placeholder="或输入本地字体名 (如: 微软雅黑 / 霞鹜文楷)"
+                      className="min-w-0 flex-1 rounded-lg px-2 py-1 text-[11px] outline-none"
+                      style={{
+                        backgroundColor: 'var(--bg-page)',
+                        color: 'var(--text-primary)',
+                        border: '1px solid var(--border-subtle)',
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const fam = customLocalFontInput.trim();
+                        if (!fam) return;
+                        onUpdateSettings({ fontFamily: `local:${fam}` });
+                        setCustomLocalFontInput('');
+                      }}
+                      className="shrink-0 rounded-lg px-2.5 py-1 text-[11px] font-medium text-white"
+                      style={{ backgroundColor: 'var(--accent-primary)' }}
+                    >
+                      应用
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* 4. Layout Mode, Measure Width & Detailed Spacing */}

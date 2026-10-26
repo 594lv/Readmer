@@ -4,6 +4,7 @@ import {
   ArchiveRestore,
   BookOpen,
   Check,
+  ChevronDown,
   DatabaseBackup,
   Download,
   FileCode,
@@ -43,6 +44,13 @@ import {
   warmUpMermaidDiagramsForContent,
 } from '../core/parserEngine';
 import { exportFullLibraryFromIndexedDB } from '../core/storageEngine';
+import {
+  detectInstalledLocalFonts,
+  getShortLocalFontLabel,
+  InstalledSystemFont,
+  queryBrowserLocalFonts,
+  resolveReaderFontFamilyCss,
+} from '../core/paginationEngine';
 import { ExportStudioModal } from './ExportStudioModal';
 
 interface TypographyDataViewProps {
@@ -61,7 +69,6 @@ const BUILTIN_FONTS = [
   { id: 'serif-editorial', name: '人文衬线宋' },
   { id: 'sans-warm', name: '温润无衬线' },
   { id: 'kaiti-classic', name: '书房楷体' },
-  { id: 'mono-tabular', name: '等宽手稿' },
 ];
 
 export const TypographyDataView: React.FC<TypographyDataViewProps> = ({
@@ -82,6 +89,11 @@ export const TypographyDataView: React.FC<TypographyDataViewProps> = ({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isBackingUp, setIsBackingUp] = useState(false);
   const [studioModalFormat, setStudioModalFormat] = useState<ExportFormat | null>(null);
+  const [installedLocalFonts, setInstalledLocalFonts] = useState<InstalledSystemFont[]>(() =>
+    detectInstalledLocalFonts()
+  );
+  const [localFontPickerOpen, setLocalFontPickerOpen] = useState(false);
+  const [customLocalFontInput, setCustomLocalFontInput] = useState('');
 
   const fontInputRef = useRef<HTMLInputElement>(null);
   const backupInputRef = useRef<HTMLInputElement>(null);
@@ -160,11 +172,7 @@ export const TypographyDataView: React.FC<TypographyDataViewProps> = ({
   };
 
   const getFontFamilyStyle = (fontId: string): string => {
-    if (fontId === 'serif-editorial') return "'Lora', 'Noto Serif SC', 'Songti SC', serif";
-    if (fontId === 'sans-warm') return "'Plus Jakarta Sans', -apple-system, sans-serif";
-    if (fontId === 'kaiti-classic') return "'LXGW WenKai', 'Kaiti SC', 'STKaiti', 'KaiTi', serif";
-    if (fontId === 'mono-tabular') return "'JetBrains Mono', monospace";
-    return `'${fontId}', 'Noto Serif SC', serif`;
+    return resolveReaderFontFamilyCss(fontId);
   };
 
   return (
@@ -239,7 +247,10 @@ export const TypographyDataView: React.FC<TypographyDataViewProps> = ({
               return (
                 <button
                   key={f.id}
-                  onClick={() => onUpdateSettings({ fontFamily: f.id })}
+                  onClick={() => {
+                    setLocalFontPickerOpen(false);
+                    onUpdateSettings({ fontFamily: f.id });
+                  }}
                   className="flex items-center justify-between rounded-xl px-3 py-2.5 text-xs font-medium transition-all"
                   style={{
                     backgroundColor: isSelected ? 'var(--accent-soft)' : 'var(--bg-surface)',
@@ -259,12 +270,54 @@ export const TypographyDataView: React.FC<TypographyDataViewProps> = ({
               );
             })}
 
+            {/* 4th Slot: Local Installed System Font Selector */}
+            {(() => {
+              const isLocalSelected = settings.fontFamily.startsWith('local:');
+              const shortLabel = getShortLocalFontLabel(settings.fontFamily, installedLocalFonts);
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextOpen = !localFontPickerOpen;
+                    setLocalFontPickerOpen(nextOpen);
+                    queryBrowserLocalFonts().then((list) => setInstalledLocalFonts(list));
+                    if (!isLocalSelected && installedLocalFonts.length > 0) {
+                      onUpdateSettings({
+                        fontFamily: `local:${installedLocalFonts[0].family}`,
+                      });
+                    }
+                  }}
+                  className="flex items-center justify-between gap-1 rounded-xl px-3 py-2.5 text-xs font-medium transition-all"
+                  style={{
+                    backgroundColor: isLocalSelected ? 'var(--accent-soft)' : 'var(--bg-surface)',
+                    border: isLocalSelected
+                      ? '1px solid var(--accent-primary)'
+                      : '1px solid var(--border-subtle)',
+                  }}
+                  title="选择本机已安装的系统字体"
+                >
+                  <span className="truncate">
+                    {isLocalSelected ? `本地 · ${shortLabel}` : '本地已装字体'}
+                  </span>
+                  <ChevronDown
+                    className="h-3.5 w-3.5 shrink-0"
+                    style={{
+                      color: isLocalSelected ? 'var(--accent-primary)' : 'var(--text-muted)',
+                    }}
+                  />
+                </button>
+              );
+            })()}
+
             {customFonts.map((cf) => {
               const isSelected = settings.fontFamily === cf.id;
               return (
                 <div
                   key={cf.id}
-                  onClick={() => onUpdateSettings({ fontFamily: cf.id })}
+                  onClick={() => {
+                    setLocalFontPickerOpen(false);
+                    onUpdateSettings({ fontFamily: cf.id });
+                  }}
                   className="flex cursor-pointer items-center justify-between rounded-xl px-3 py-2.5 text-xs font-medium transition-all"
                   style={{
                     backgroundColor: isSelected ? 'var(--accent-soft)' : 'var(--bg-surface)',
@@ -289,6 +342,100 @@ export const TypographyDataView: React.FC<TypographyDataViewProps> = ({
               );
             })}
           </div>
+
+          {/* Expandable Local Installed Font Picker Panel */}
+          {(localFontPickerOpen || settings.fontFamily.startsWith('local:')) && (
+            <div
+              className="mt-3 rounded-xl p-3 space-y-2.5"
+              style={{
+                backgroundColor: 'var(--bg-surface)',
+                border: '1px solid var(--border-subtle)',
+              }}
+            >
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>
+                  本机已安装字体 ({installedLocalFonts.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    queryBrowserLocalFonts().then((list) => {
+                      setInstalledLocalFonts(list);
+                      showToast(`已读取 ${list.length} 款本机可用字体`);
+                    });
+                  }}
+                  className="underline transition-opacity hover:opacity-80"
+                  style={{ color: 'var(--accent-primary)' }}
+                >
+                  扫描系统全部字体
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <select
+                  value={
+                    settings.fontFamily.startsWith('local:')
+                      ? settings.fontFamily.slice('local:'.length)
+                      : installedLocalFonts[0]?.family || ''
+                  }
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val) {
+                      onUpdateSettings({ fontFamily: `local:${val}` });
+                    }
+                  }}
+                  className="w-full rounded-lg px-3 py-1.5 text-xs outline-none"
+                  style={{
+                    backgroundColor: 'var(--bg-page)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid var(--border-subtle)',
+                  }}
+                >
+                  {installedLocalFonts.map((lf) => (
+                    <option key={lf.family} value={lf.family}>
+                      {lf.label}
+                    </option>
+                  ))}
+                </select>
+
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    value={customLocalFontInput}
+                    onChange={(e) => setCustomLocalFontInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && customLocalFontInput.trim()) {
+                        e.preventDefault();
+                        const fam = customLocalFontInput.trim();
+                        onUpdateSettings({ fontFamily: `local:${fam}` });
+                        setCustomLocalFontInput('');
+                      }
+                    }}
+                    placeholder="或直接输入本地字体名 (如: 微软雅黑)"
+                    className="min-w-0 flex-1 rounded-lg px-2.5 py-1.5 text-xs outline-none"
+                    style={{
+                      backgroundColor: 'var(--bg-page)',
+                      color: 'var(--text-primary)',
+                      border: '1px solid var(--border-subtle)',
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const fam = customLocalFontInput.trim();
+                      if (!fam) return;
+                      onUpdateSettings({ fontFamily: `local:${fam}` });
+                      setCustomLocalFontInput('');
+                    }}
+                    className="shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium text-white"
+                    style={{ backgroundColor: 'var(--accent-primary)' }}
+                  >
+                    应用
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Icon-Driven Sliders */}
           <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">

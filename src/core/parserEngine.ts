@@ -419,6 +419,7 @@ function configureMermaidForPureSvgExport(themeStyle = 'parchment'): void {
     startOnLoad: false,
     securityLevel: 'loose',
     theme: themeStyle === 'espresso' ? 'dark' : 'base',
+    htmlLabels: false,
     flowchart: {
       htmlLabels: false,
       wrappingWidth: 210,
@@ -430,8 +431,19 @@ function configureMermaidForPureSvgExport(themeStyle = 'parchment'): void {
     },
     sequence: {
       useMaxWidth: false,
+      mirrorActors: false,
     },
     gantt: {
+      useMaxWidth: false,
+    },
+    pie: {
+      useMaxWidth: false,
+    },
+    class: {
+      htmlLabels: false,
+      useMaxWidth: false,
+    },
+    state: {
       useMaxWidth: false,
     },
     themeVariables: {
@@ -515,7 +527,7 @@ function sanitizeMermaidSvgToPureVector(
       `background-color:${pal.bg};max-width:100%;height:auto;display:block;margin:0 auto;`
     );
 
-    // Replace all <foreignObject> nodes with native SVG <text>/<tspan> elements
+    // Replace any remaining <foreignObject> nodes with native SVG <text>/<tspan> elements
     svgEl.querySelectorAll('foreignObject').forEach((fo) => {
       const rawLabel = (fo.textContent || '').replace(/\s+/g, ' ').trim();
       if (!rawLabel) {
@@ -524,10 +536,12 @@ function sanitizeMermaidSvgToPureVector(
       }
       const fx = parseFloat(fo.getAttribute('x') || '0') || 0;
       const fy = parseFloat(fo.getAttribute('y') || '0') || 0;
-      const fw = parseFloat(fo.getAttribute('width') || '140') || 140;
-      const fh = parseFloat(fo.getAttribute('height') || '36') || 36;
-      const cx = fx + fw / 2;
-      const cy = fy + fh / 2;
+      const rawW = parseFloat(fo.getAttribute('width') || '0');
+      const rawH = parseFloat(fo.getAttribute('height') || '0');
+      // Only offset by fw/2 if width/height are genuinely positive; if 0, parent <g> is already centered at (0,0)
+      const cx = rawW > 2 ? fx + rawW / 2 : fx;
+      const cy = rawH > 2 ? fy + rawH / 2 : fy;
+      const wrapW = rawW > 40 ? rawW : 180;
 
       const textEl = doc.createElementNS('http://www.w3.org/2000/svg', 'text');
       textEl.setAttribute('x', String(cx));
@@ -542,8 +556,7 @@ function sanitizeMermaidSvgToPureVector(
         "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif"
       );
 
-      // Wrap label if longer than ~16 chars
-      const maxCharsPerLine = Math.max(10, Math.floor(fw / 13));
+      const maxCharsPerLine = Math.max(10, Math.floor(wrapW / 13));
       const lines: string[] = [];
       for (let idx = 0; idx < rawLabel.length; idx += maxCharsPerLine) {
         lines.push(rawLabel.slice(idx, idx + maxCharsPerLine));
@@ -749,10 +762,10 @@ function buildSynthesizedMermaidDiagram(
 }
 
 /**
- * Rasterizes a pure native SVG string onto a high-DPI (2.5x Retina) offscreen canvas
+ * Rasterizes a pure native SVG string onto a high-DPI (3.0x Ultra-Retina) offscreen canvas
  * and returns a PNG data URL (`data:image/png;base64,...`) suitable for `jsPDF.addImage`.
  */
-async function rasterizePureSvgToPngDataUrl(
+export async function rasterizePureSvgToPngDataUrl(
   pureSvg: string,
   width: number,
   height: number,
@@ -764,12 +777,12 @@ async function rasterizePureSvgToPngDataUrl(
   return new Promise<string>((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    const timeout = setTimeout(() => resolve(''), 3500);
+    const timeout = setTimeout(() => resolve(''), 4000);
 
     img.onload = () => {
       clearTimeout(timeout);
       try {
-        const scale = 2.5;
+        const scale = 3.0;
         const canvas = document.createElement('canvas');
         canvas.width = Math.max(1, Math.round(width * scale));
         canvas.height = Math.max(1, Math.round(height * scale));
@@ -796,13 +809,13 @@ async function rasterizePureSvgToPngDataUrl(
 
 function getMermaidExportCacheKey(rawCode: string, themeStyle = 'parchment'): string {
   const sanitized = sanitizeMermaidCode(rawCode);
-  return `exp_v2:::${themeStyle}:::${sanitized}`;
+  return `exp_v3:::${themeStyle}:::${sanitized}`;
 }
 
 /**
  * Synchronously retrieves a pre-rendered Mermaid diagram for PDF/HTML/EPUB export.
- * If async warm-up has not yet completed for this diagram, returns a deterministic pure-SVG
- * diagram immediately so zero Mermaid blocks are ever omitted.
+ * Checks exportMermaidCache first, then checks the Reader's live mermaidSvgCache,
+ * and falls back to the deterministic pure-SVG diagram synthesizer so zero blocks are omitted.
  */
 export function getExportedMermaidDiagramSync(
   rawCode: string,
@@ -811,11 +824,28 @@ export function getExportedMermaidDiagramSync(
   const key = getMermaidExportCacheKey(rawCode, themeStyle);
   const cached = exportMermaidCache.get(key);
   if (cached) return cached;
+
+  const sanitized = sanitizeMermaidCode(rawCode);
+  for (const [liveKey, liveVal] of mermaidSvgCache.entries()) {
+    if (liveKey.endsWith(`:::${sanitized}`) && liveVal.svg) {
+      const converted = sanitizeMermaidSvgToPureVector(liveVal.svg, themeStyle);
+      const svgDataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(converted.pureSvg)}`;
+      return {
+        code: rawCode.trim(),
+        svg: converted.pureSvg,
+        svgDataUrl,
+        pngDataUrl: '',
+        width: converted.width,
+        height: converted.height,
+      };
+    }
+  }
+
   return buildSynthesizedMermaidDiagram(rawCode, themeStyle);
 }
 
 /**
- * Pre-renders a single Mermaid diagram for export (pure native SVG + 2.5x PNG DataURL for jsPDF).
+ * Pre-renders a single Mermaid diagram for export (pure native SVG + 3.0x PNG DataURL for jsPDF).
  */
 export async function renderMermaidForExport(
   rawCode: string,
@@ -829,6 +859,10 @@ export async function renderMermaidForExport(
 
   const pal = getExportPaletteForTheme(themeStyle);
   const sanitized = sanitizeMermaidCode(rawCode);
+  // If a horizontal flowchart has many edges (> 5), normalize to TD so it fits cleanly on an A4 column
+  const edgeCount = (sanitized.match(/-->|---|-\.->|==>/g) || []).length;
+  const a4AdaptedCode =
+    edgeCount > 5 ? normalizeMermaidDirectionToTD(sanitized, true) : sanitized;
 
   const resultPromise = mermaidRenderQueue.then(async () => {
     const existing = exportMermaidCache.get(key);
@@ -843,7 +877,7 @@ export async function renderMermaidForExport(
       const uniqueId = `mermaid_exp_${Date.now()}_${++mermaidRenderSeq}`;
       let renderRes: { svg: string };
       try {
-        renderRes = await mermaid.render(uniqueId, sanitized);
+        renderRes = await mermaid.render(uniqueId, a4AdaptedCode);
       } catch {
         const fbId = `mermaid_exp_fb_${Date.now()}_${++mermaidRenderSeq}`;
         renderRes = await mermaid.render(fbId, rawCode.trim());

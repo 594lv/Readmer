@@ -147,6 +147,7 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
     if (confirmDeleteBookId === bookId) {
       if (confirmDeleteTimerRef.current) {
         window.clearTimeout(confirmDeleteTimerRef.current);
+        confirmDeleteTimerRef.current = null;
       }
       setConfirmDeleteBookId(null);
       setActiveTouchMenuBookId(null);
@@ -158,8 +159,17 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
       }
       confirmDeleteTimerRef.current = window.setTimeout(() => {
         setConfirmDeleteBookId((prev) => (prev === bookId ? null : prev));
-      }, 3200);
+      }, 3500);
     }
+  };
+
+  const handleCancelDeleteBook = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (confirmDeleteTimerRef.current) {
+      window.clearTimeout(confirmDeleteTimerRef.current);
+      confirmDeleteTimerRef.current = null;
+    }
+    setConfirmDeleteBookId(null);
   };
 
   useEffect(() => {
@@ -1007,100 +1017,114 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
                       </div>
                     ) : (
                       <div
-                        className={`absolute top-1.5 right-1.5 flex max-w-[calc(100%-12px)] flex-wrap items-center justify-end gap-1 rounded-lg p-1 backdrop-blur-xs transition-opacity ${
+                        className={`absolute top-1.5 right-1.5 flex max-w-[calc(100%-12px)] items-center justify-end gap-1 rounded-lg p-1 backdrop-blur-xs transition-opacity ${
+                          confirmDeleteBookId === book.id ? 'flex-nowrap' : 'flex-wrap'
+                        } ${
                           activeTouchMenuBookId === book.id || confirmDeleteBookId === book.id
                             ? 'opacity-100'
                             : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
                         }`}
                         style={{
-                          backgroundColor: 'rgba(251, 247, 240, 0.95)',
+                          backgroundColor: 'rgba(251, 247, 240, 0.96)',
                           border: '1px solid var(--border-subtle)',
                         }}
                         onClick={(e) => e.stopPropagation()}
                       >
-                        {onToggleBookPrivacy && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onToggleBookPrivacy(book.id);
-                            }}
-                            className="flex h-7 w-7 items-center justify-center rounded hover:opacity-75"
-                            style={{ color: '#2C1E16' }}
-                            title={
-                              isPrivateSpaceMode
-                                ? '移出私密空间（解密还原至公开书架）'
-                                : '加密移入私密空间'
-                            }
-                          >
-                            {isPrivateSpaceMode ? (
-                              <Unlock className="h-3.5 w-3.5" />
-                            ) : (
-                              <Lock className="h-3.5 w-3.5" />
+                        {confirmDeleteBookId === book.id ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={(e) => handleRequestDeleteBook(book.id, e)}
+                              className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md bg-[#B44332] px-2.5 text-xs font-medium text-white whitespace-nowrap shadow-xs transition-colors hover:bg-[#9E3828]"
+                              title="再次点击确认永久移除"
+                            >
+                              <Trash2 className="h-3 w-3 shrink-0" />
+                              <span>确认删除</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleCancelDeleteBook}
+                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-black/5"
+                              style={{ color: '#544032' }}
+                              title="取消移除"
+                              aria-label="取消移除"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            {onToggleBookPrivacy && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onToggleBookPrivacy(book.id);
+                                }}
+                                className="flex h-7 w-7 shrink-0 items-center justify-center rounded hover:opacity-75"
+                                style={{ color: '#2C1E16' }}
+                                title={
+                                  isPrivateSpaceMode
+                                    ? '移出私密空间（解密还原至公开书架）'
+                                    : '加密移入私密空间'
+                                }
+                              >
+                                {isPrivateSpaceMode ? (
+                                  <Unlock className="h-3.5 w-3.5" />
+                                ) : (
+                                  <Lock className="h-3.5 w-3.5" />
+                                )}
+                              </button>
                             )}
-                          </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setExportingBook(book);
+                              }}
+                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded hover:opacity-75"
+                              style={{ color: '#2C1E16' }}
+                              title="导出"
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onToggleFavorite(book.id);
+                              }}
+                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded hover:opacity-75"
+                              style={{
+                                color: book.isFavorite ? '#B4532A' : '#544032',
+                              }}
+                              title="收藏"
+                            >
+                              <Heart
+                                className="h-3.5 w-3.5"
+                                fill={book.isFavorite ? 'currentColor' : 'none'}
+                              />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => openEditModal(book, e)}
+                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded hover:opacity-75"
+                              style={{ color: '#2C1E16' }}
+                              title="编辑信息"
+                            >
+                              <Edit3 className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleRequestDeleteBook(book.id, e)}
+                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors hover:text-red-600"
+                              style={{ color: '#544032' }}
+                              title="移除书籍"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </>
                         )}
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setExportingBook(book);
-                          }}
-                          className="flex h-7 w-7 items-center justify-center rounded hover:opacity-75"
-                          style={{ color: '#2C1E16' }}
-                          title="导出"
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onToggleFavorite(book.id);
-                          }}
-                          className="flex h-7 w-7 items-center justify-center rounded hover:opacity-75"
-                          style={{
-                            color: book.isFavorite ? '#B4532A' : '#544032',
-                          }}
-                          title="收藏"
-                        >
-                          <Heart
-                            className="h-3.5 w-3.5"
-                            fill={book.isFavorite ? 'currentColor' : 'none'}
-                          />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => openEditModal(book, e)}
-                          className="flex h-7 w-7 items-center justify-center rounded hover:opacity-75"
-                          style={{ color: '#2C1E16' }}
-                          title="编辑信息"
-                        >
-                          <Edit3 className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => handleRequestDeleteBook(book.id, e)}
-                          className={`flex h-7 items-center justify-center rounded px-1.5 text-[11px] font-medium transition-colors ${
-                            confirmDeleteBookId === book.id
-                              ? 'bg-[#B44332] text-white'
-                              : 'w-7 hover:text-red-600'
-                          }`}
-                          style={
-                            confirmDeleteBookId === book.id ? undefined : { color: '#544032' }
-                          }
-                          title={
-                            confirmDeleteBookId === book.id
-                              ? '再次点击确认永久移除'
-                              : '移除书籍'
-                          }
-                        >
-                          {confirmDeleteBookId === book.id ? (
-                            <span>确认删</span>
-                          ) : (
-                            <Trash2 className="h-3.5 w-3.5" />
-                          )}
-                        </button>
                       </div>
                     )}
                   </div>
@@ -1286,100 +1310,113 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
                       </div>
                     ) : (
                       <div
-                        className={`absolute top-1 right-1 flex max-w-[calc(100%-8px)] flex-wrap items-center justify-end gap-0.5 rounded-md p-0.5 backdrop-blur-xs transition-opacity ${
+                        className={`absolute top-1 right-1 flex max-w-[calc(100%-8px)] items-center justify-end gap-0.5 rounded-md p-0.5 backdrop-blur-xs transition-opacity ${
+                          confirmDeleteBookId === book.id ? 'flex-nowrap' : 'flex-wrap'
+                        } ${
                           activeTouchMenuBookId === book.id || confirmDeleteBookId === book.id
                             ? 'opacity-100'
                             : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
                         }`}
                         style={{
-                          backgroundColor: 'rgba(251, 247, 240, 0.95)',
+                          backgroundColor: 'rgba(251, 247, 240, 0.96)',
                           border: '1px solid var(--border-subtle)',
                         }}
                         onClick={(e) => e.stopPropagation()}
                       >
-                        {onToggleBookPrivacy && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onToggleBookPrivacy(book.id);
-                            }}
-                            className="flex h-5 w-5 items-center justify-center rounded hover:opacity-75"
-                            style={{ color: '#2C1E16' }}
-                            title={
-                              isPrivateSpaceMode
-                                ? '移出私密空间'
-                                : '加密移入私密空间'
-                            }
-                          >
-                            {isPrivateSpaceMode ? (
-                              <Unlock className="h-3 w-3" />
-                            ) : (
-                              <Lock className="h-3 w-3" />
+                        {confirmDeleteBookId === book.id ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={(e) => handleRequestDeleteBook(book.id, e)}
+                              className="flex h-6 shrink-0 items-center justify-center rounded bg-[#B44332] px-1.5 text-[11px] font-medium text-white whitespace-nowrap shadow-xs transition-colors hover:bg-[#9E3828]"
+                              title="再次点击确认永久移除"
+                            >
+                              <span>确认删除</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleCancelDeleteBook}
+                              className="flex h-6 w-5 shrink-0 items-center justify-center rounded transition-colors hover:bg-black/5"
+                              style={{ color: '#544032' }}
+                              title="取消"
+                              aria-label="取消"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            {onToggleBookPrivacy && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onToggleBookPrivacy(book.id);
+                                }}
+                                className="flex h-5 w-5 shrink-0 items-center justify-center rounded hover:opacity-75"
+                                style={{ color: '#2C1E16' }}
+                                title={
+                                  isPrivateSpaceMode
+                                    ? '移出私密空间'
+                                    : '加密移入私密空间'
+                                }
+                              >
+                                {isPrivateSpaceMode ? (
+                                  <Unlock className="h-3 w-3" />
+                                ) : (
+                                  <Lock className="h-3 w-3" />
+                                )}
+                              </button>
                             )}
-                          </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onToggleFavorite(book.id);
+                              }}
+                              className="flex h-5 w-5 shrink-0 items-center justify-center rounded hover:opacity-75"
+                              style={{
+                                color: book.isFavorite ? 'var(--accent-primary)' : '#544032',
+                              }}
+                              title="收藏"
+                            >
+                              <Heart
+                                className="h-3 w-3"
+                                fill={book.isFavorite ? 'currentColor' : 'none'}
+                              />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setExportingBook(book);
+                              }}
+                              className="flex h-5 w-5 shrink-0 items-center justify-center rounded hover:opacity-75"
+                              style={{ color: '#2C1E16' }}
+                              title="导出"
+                            >
+                              <Download className="h-3 w-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => openEditModal(book, e)}
+                              className="flex h-5 w-5 shrink-0 items-center justify-center rounded hover:opacity-75"
+                              style={{ color: '#2C1E16' }}
+                              title="编辑"
+                            >
+                              <Edit3 className="h-3 w-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleRequestDeleteBook(book.id, e)}
+                              className="flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors hover:text-red-600"
+                              style={{ color: '#544032' }}
+                              title="移除书籍"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </>
                         )}
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onToggleFavorite(book.id);
-                          }}
-                          className="flex h-5 w-5 items-center justify-center rounded hover:opacity-75"
-                          style={{
-                            color: book.isFavorite ? 'var(--accent-primary)' : '#544032',
-                          }}
-                          title="收藏"
-                        >
-                          <Heart
-                            className="h-3 w-3"
-                            fill={book.isFavorite ? 'currentColor' : 'none'}
-                          />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setExportingBook(book);
-                          }}
-                          className="flex h-5 w-5 items-center justify-center rounded hover:opacity-75"
-                          style={{ color: '#2C1E16' }}
-                          title="导出"
-                        >
-                          <Download className="h-3 w-3" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => openEditModal(book, e)}
-                          className="flex h-5 w-5 items-center justify-center rounded hover:opacity-75"
-                          style={{ color: '#2C1E16' }}
-                          title="编辑"
-                        >
-                          <Edit3 className="h-3 w-3" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => handleRequestDeleteBook(book.id, e)}
-                          className={`flex h-5 items-center justify-center rounded px-1 text-[10px] font-medium ${
-                            confirmDeleteBookId === book.id
-                              ? 'bg-[#B44332] text-white'
-                              : 'w-5 hover:text-red-600'
-                          }`}
-                          style={
-                            confirmDeleteBookId === book.id ? undefined : { color: '#544032' }
-                          }
-                          title={
-                            confirmDeleteBookId === book.id
-                              ? '再次点击确认移除'
-                              : '移除书籍'
-                          }
-                        >
-                          {confirmDeleteBookId === book.id ? (
-                            <span>删</span>
-                          ) : (
-                            <Trash2 className="h-3 w-3" />
-                          )}
-                        </button>
                       </div>
                     )}
                   </div>
@@ -1459,11 +1496,11 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
                 color: 'var(--text-muted)',
               }}
             >
-              <div className="col-span-5">书名 / 作者</div>
+              <div className="col-span-4">书名 / 作者</div>
               <div className="col-span-2">分类 · 格式</div>
               <div className="col-span-2">篇幅 · 章节</div>
               <div className="col-span-2">阅读进度</div>
-              <div className="col-span-1 text-right">操作</div>
+              <div className="col-span-2 text-right">操作</div>
             </div>
 
             <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
@@ -1493,7 +1530,7 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
                     }}
                   >
                     {/* Title, Cover Thumbnail & Author */}
-                    <div className="flex min-w-0 items-center gap-3.5 md:col-span-5">
+                    <div className="flex min-w-0 items-center gap-3.5 md:col-span-4">
                       {batchMode && (
                         <span className="shrink-0" style={{ color: 'var(--accent-primary)' }}>
                           {isSelectedForBatch ? (
@@ -1602,7 +1639,7 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
                     </div>
 
                     {/* Mobile + Desktop Bottom / Right Row: Category (Mobile) + Progress + Icon Actions */}
-                    <div className="flex items-center justify-between gap-3 md:col-span-3 md:grid md:grid-cols-3 md:gap-2">
+                    <div className="flex items-center justify-between gap-3 md:col-span-4 md:grid md:grid-cols-4 md:items-center md:gap-3">
                       {/* Mobile-only category selector */}
                       <div
                         className="flex items-center gap-1 text-xs md:hidden"
@@ -1647,87 +1684,97 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
 
                       {/* Icon Actions */}
                       <div
-                        className="flex shrink-0 items-center justify-end gap-0.5 md:col-span-1"
+                        className="flex shrink-0 flex-nowrap items-center justify-end gap-1 md:col-span-2"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        {onToggleBookPrivacy && (
-                          <button
-                            type="button"
-                            onClick={() => onToggleBookPrivacy(book.id)}
-                            className="flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:opacity-80"
-                            style={{ color: 'var(--text-muted)' }}
-                            title={
-                              isPrivateSpaceMode
-                                ? '移出私密空间（解密还原至公开书架）'
-                                : '加密移入私密空间'
-                            }
-                          >
-                            {isPrivateSpaceMode ? (
-                              <Unlock className="h-3.5 w-3.5" />
-                            ) : (
-                              <Lock className="h-3.5 w-3.5" />
+                        {confirmDeleteBookId === book.id ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={(e) => handleRequestDeleteBook(book.id, e)}
+                              className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md bg-[#B44332] px-2.5 text-xs font-medium text-white whitespace-nowrap shadow-xs transition-colors hover:bg-[#9E3828]"
+                              title="再次点击确认永久移除"
+                            >
+                              <Trash2 className="h-3 w-3 shrink-0" />
+                              <span>确认删除</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleCancelDeleteBook}
+                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-black/5"
+                              style={{ color: 'var(--text-secondary)' }}
+                              title="取消移除"
+                              aria-label="取消移除"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            {onToggleBookPrivacy && (
+                              <button
+                                type="button"
+                                onClick={() => onToggleBookPrivacy(book.id)}
+                                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:opacity-80"
+                                style={{ color: 'var(--text-muted)' }}
+                                title={
+                                  isPrivateSpaceMode
+                                    ? '移出私密空间（解密还原至公开书架）'
+                                    : '加密移入私密空间'
+                                }
+                              >
+                                {isPrivateSpaceMode ? (
+                                  <Unlock className="h-3.5 w-3.5" />
+                                ) : (
+                                  <Lock className="h-3.5 w-3.5" />
+                                )}
+                              </button>
                             )}
-                          </button>
+                            <button
+                              type="button"
+                              onClick={() => setExportingBook(book)}
+                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:opacity-80"
+                              style={{ color: 'var(--text-muted)' }}
+                              title="导出"
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onToggleFavorite(book.id)}
+                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:opacity-80"
+                              style={{
+                                color: book.isFavorite
+                                  ? 'var(--accent-primary)'
+                                  : 'var(--text-muted)',
+                              }}
+                              title="收藏"
+                            >
+                              <Heart
+                                className="h-3.5 w-3.5"
+                                fill={book.isFavorite ? 'currentColor' : 'none'}
+                              />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => openEditModal(book, e)}
+                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:opacity-80"
+                              style={{ color: 'var(--text-muted)' }}
+                              title="编辑"
+                            >
+                              <Edit3 className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleRequestDeleteBook(book.id, e)}
+                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:text-red-600"
+                              style={{ color: 'var(--text-muted)' }}
+                              title="移除书籍"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => setExportingBook(book)}
-                          className="flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:opacity-80"
-                          style={{ color: 'var(--text-muted)' }}
-                          title="导出"
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onToggleFavorite(book.id)}
-                          className="flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:opacity-80"
-                          style={{
-                            color: book.isFavorite
-                              ? 'var(--accent-primary)'
-                              : 'var(--text-muted)',
-                          }}
-                          title="收藏"
-                        >
-                          <Heart
-                            className="h-3.5 w-3.5"
-                            fill={book.isFavorite ? 'currentColor' : 'none'}
-                          />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => openEditModal(book, e)}
-                          className="flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:opacity-80"
-                          style={{ color: 'var(--text-muted)' }}
-                          title="编辑"
-                        >
-                          <Edit3 className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => handleRequestDeleteBook(book.id, e)}
-                          className={`flex h-7 items-center justify-center rounded-md px-1.5 text-[11px] font-medium transition-colors ${
-                            confirmDeleteBookId === book.id
-                              ? 'bg-[#B44332] text-white'
-                              : 'w-7 hover:text-red-600'
-                          }`}
-                          style={
-                            confirmDeleteBookId === book.id
-                              ? undefined
-                              : { color: 'var(--text-muted)' }
-                          }
-                          title={
-                            confirmDeleteBookId === book.id
-                              ? '再次点击确认移除'
-                              : '移除书籍'
-                          }
-                        >
-                          {confirmDeleteBookId === book.id ? (
-                            <span>确认删</span>
-                          ) : (
-                            <Trash2 className="h-3.5 w-3.5" />
-                          )}
-                        </button>
                       </div>
                     </div>
                   </div>
