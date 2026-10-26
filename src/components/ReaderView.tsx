@@ -1496,7 +1496,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           onMouseUp={handleMouseUpSelection}
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
-          className={`relative flex flex-1 items-center justify-center overflow-hidden px-2 sm:px-10 transition-all duration-200 ${
+          className={`relative flex flex-1 items-center justify-center overflow-hidden transition-all duration-200 ${
+            isSinglePage ? 'w-full px-0 sm:px-1.5 md:px-2.5' : 'px-2 sm:px-10'
+          } ${
             chromeVisible ? 'pt-13 pb-2.5 sm:pt-14 sm:pb-14' : 'pt-13 pb-2.5 sm:py-5'
           }`}
         >
@@ -1508,7 +1510,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               handlePrevPage();
             }}
             disabled={!canGoPrev}
-            className=" hidden sm:flex absolute top-1/2 left-2.5 z-20 h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full opacity-70 transition-all hover:opacity-100 disabled:opacity-20"
+            className={`hidden sm:flex absolute top-1/2 left-2 z-20 h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full opacity-60 transition-all hover:opacity-100 disabled:opacity-15 shadow-sm ${
+              isSinglePage ? 'backdrop-blur-xs' : ''
+            }`}
             style={{
               backgroundColor: 'var(--bg-surface)',
               color: 'var(--text-primary)',
@@ -1528,7 +1532,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               handleNextPage();
             }}
             disabled={!canGoNext}
-            className="hidden sm:flex absolute top-1/2 right-2.5 z-20 h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full opacity-70 transition-all hover:opacity-100 disabled:opacity-20"
+            className={`hidden sm:flex absolute top-1/2 right-2 z-20 h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full opacity-60 transition-all hover:opacity-100 disabled:opacity-15 shadow-sm ${
+              isSinglePage ? 'backdrop-blur-xs' : ''
+            }`}
             style={{
               backgroundColor: 'var(--bg-surface)',
               color: 'var(--text-primary)',
@@ -1542,15 +1548,23 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
           {isPaginated ? (
             <div
-              className="paper-grain relative flex h-full w-full max-w-[1280px] flex-col justify-between overflow-hidden rounded-2xl transition-all duration-200"
+              className={`relative flex h-full w-full flex-col justify-between overflow-hidden transition-all duration-200 ${
+                isSinglePage
+                  ? 'max-w-full mx-auto rounded-none sm:rounded-xl md:rounded-2xl border-x-0 sm:border-x shadow-none sm:shadow-[var(--page-shadow)]'
+                  : 'max-w-[1280px] mx-auto rounded-2xl shadow-[var(--page-shadow)]'
+              }`}
               style={{
                 backgroundColor: 'var(--bg-page)',
                 border: '1px solid var(--border-subtle)',
-                boxShadow: 'var(--page-shadow)',
-                padding: `${Math.max(10, Math.min(20, Math.round(settings.pageMargin * 0.4)))}px ${Math.max(
-                  14,
-                  Math.min(settings.pageMargin, Math.floor(effectiveCanvasWidth * 0.05))
-                )}px`,
+                padding: isSinglePage
+                  ? `${Math.max(8, Math.min(16, Math.round(settings.pageMargin * 0.3)))}px ${Math.max(
+                      8,
+                      Math.min(20, Math.round(settings.pageMargin * 0.35))
+                    )}px`
+                  : `${Math.max(10, Math.min(20, Math.round(settings.pageMargin * 0.4)))}px ${Math.max(
+                      14,
+                      Math.min(settings.pageMargin, Math.floor(effectiveCanvasWidth * 0.05))
+                    )}px`,
               }}
             >
               {isSpreadMode && (
@@ -1575,28 +1589,32 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 </span>
               </div>
 
-              {/* Book Text Columns */}
+              {/* Book Text Columns: Full-width auto-centered layout in single-page mode */}
               <div
                 className={`my-1 sm:my-1.5 grid min-h-0 flex-1 overflow-hidden ${
-                  isSpreadMode ? 'grid-cols-2 gap-8 lg:gap-12' : 'mx-auto w-full max-w-3xl grid-cols-1'
+                  isSpreadMode
+                    ? 'grid-cols-2 gap-8 lg:gap-12'
+                    : 'mx-auto w-full max-w-full grid-cols-1'
                 }`}
                 style={{
                   fontFamily: getFontFamilyCss(settings.fontFamily),
                   fontSize: `${settings.fontSize}px`,
                   lineHeight: settings.lineHeight,
                   letterSpacing: `${settings.letterSpacing}em`,
+                  wordBreak: 'break-word',
+                  overflowWrap: 'break-word',
                 }}
               >
                 <div
                   data-reader-column="true"
-                  className="min-w-0 overflow-x-hidden overflow-y-auto pr-0.5"
+                  className="min-w-0 w-full overflow-x-hidden overflow-y-auto pr-0.5 text-justify"
                 >
                   {renderPageParagraphs(leftPage)}
                 </div>
                 {isSpreadMode && (
                   <div
                     data-reader-column="true"
-                    className="min-w-0 overflow-x-hidden overflow-y-auto pl-0.5"
+                    className="min-w-0 w-full overflow-x-hidden overflow-y-auto pl-0.5 text-justify"
                   >
                     {renderPageParagraphs(rightPage)}
                   </div>
@@ -1651,19 +1669,21 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               }}
               onTouchStart={() => setIsAutoPausedByHover(true)}
               onTouchEnd={() => setIsAutoPausedByHover(false)}
-              className="paper-grain h-full w-full max-w-4xl overflow-y-auto rounded-2xl transition-colors"
+              className="h-full w-full max-w-full overflow-y-auto rounded-none sm:rounded-2xl transition-colors mx-auto"
               style={{
                 backgroundColor: 'var(--bg-page)',
                 border: '1px solid var(--border-subtle)',
                 boxShadow: 'var(--page-shadow)',
-                padding: `40px ${settings.pageMargin}px 88px`,
+                padding: `32px ${Math.max(10, Math.min(24, Math.round(settings.pageMargin * 0.4)))}px 88px`,
                 fontFamily: getFontFamilyCss(settings.fontFamily),
                 fontSize: `${settings.fontSize}px`,
                 lineHeight: settings.lineHeight,
                 letterSpacing: `${settings.letterSpacing}em`,
+                wordBreak: 'break-word',
+                overflowWrap: 'break-word',
               }}
             >
-              <div data-reader-column="true" className="mx-auto max-w-2xl">
+              <div data-reader-column="true" className="mx-auto w-full max-w-full">
                 {virtualPages.map((page) => (
                   <div key={page.pageNumber}>{renderPageParagraphs(page)}</div>
                 ))}

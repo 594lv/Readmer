@@ -40,63 +40,48 @@ function estimateBlockLines(
         .split('\n')
         .map((l) => l.trim())
         .filter((l) => l.length > 0 && !l.startsWith('%%'));
-      const isHorizontal = /^(?:flowchart|graph)\s+(?:LR|RL)/i.test(rawLines[0] || '');
       const statementCount = Math.max(2, rawLines.length - 1);
       const isMobile = charsPerLine < 26;
-      // On mobile viewports, diagrams are rendered in vertical TD orientation with compact padding
       const estimatedDiagramPx = isMobile
-        ? Math.min(240, 85 + statementCount * 26)
-        : isHorizontal
-        ? Math.min(260, 120 + statementCount * 20)
-        : Math.min(300, 130 + statementCount * 28);
+        ? Math.min(210, 75 + statementCount * 22)
+        : Math.min(270, 95 + statementCount * 22);
       const neededLines =
         (estimatedDiagramPx / Math.max(20, lineHeightPx)) +
-        spacingLines +
-        0.4;
-      return Math.max(5.0, neededLines);
+        spacingLines * 0.35 +
+        0.2;
+      return Math.max(4.5, neededLines);
     }
     case 'table': {
-      const colCount = Math.max(1, block.tableHeaders?.length || 3);
-      const charsPerCell = Math.max(4, Math.floor((charsPerLine - colCount * 2) / colCount));
-      let totalTableLines = 2.4; // header + borders
-      const rows = block.tableRows || [];
-      for (const row of rows) {
-        let maxRowLines = 1;
-        for (const cell of row) {
-          const cellLines = Math.max(1, Math.ceil((cell || '').length / charsPerCell));
-          if (cellLines > maxRowLines) maxRowLines = cellLines;
-        }
-        totalTableLines += maxRowLines * 1.45 + 0.45;
-      }
-      return totalTableLines + spacingLines;
+      const rowCount = (block.tableRows || []).length;
+      return Math.min(16, 1.2 + rowCount * 1.15) + spacingLines * 0.35;
     }
     case 'code': {
       const lines = block.text.split('\n').length;
-      return Math.min(16, lines * 1.25 + 2.4) + spacingLines;
+      return lines * 0.85 + 1.1 + spacingLines * 0.35;
     }
     case 'blockquote': {
-      const lines = Math.max(1, Math.ceil(block.text.length / Math.max(10, charsPerLine - 4)));
-      return lines + 1.8 + spacingLines;
+      const lines = Math.max(1, Math.ceil(block.text.length / Math.max(10, charsPerLine - 2)));
+      return lines + 0.5 + spacingLines * 0.35;
     }
     case 'list': {
       const items = block.listItems || [];
-      let total = 0.6;
+      let total = 0.2;
       for (const item of items) {
-        total += Math.max(1, Math.ceil(item.text.length / Math.max(10, charsPerLine - 3))) + 0.4;
+        total += Math.max(1, Math.ceil(item.text.length / charsPerLine)) + 0.15;
       }
-      return total + spacingLines;
+      return total + spacingLines * 0.35;
     }
     case 'hr':
-      return 1.5;
+      return 0.8;
     case 'heading': {
-      const lines = Math.max(1, Math.ceil(block.text.length / Math.max(10, charsPerLine * 0.72)));
-      return lines + 1.2 + spacingLines;
+      const lines = Math.max(1, Math.ceil(block.text.length / Math.max(10, charsPerLine * 0.85)));
+      return lines + 0.4 + spacingLines * 0.35;
     }
     case 'paragraph':
     default: {
       const indent = indentFirstLine && !block.isContinuation ? 2 : 0;
       const lines = Math.max(1, Math.ceil((block.text.length + indent) / charsPerLine));
-      return lines + spacingLines;
+      return lines + spacingLines * 0.45;
     }
   }
 }
@@ -112,7 +97,8 @@ function isInsideMarkdownDelimiter(text: string, idx: number): boolean {
 
 /**
  * Finds a safe split index near `targetLength` at a natural CJK/English sentence boundary
- * so inline Markdown (`**bold**`, `*italic*`, `` `code` ``) and words are never cut in half.
+ * so inline Markdown (`**bold**`, `*italic*`, `` `code` ``) and words are never cut in half,
+ * while tightly packing text down to the bottom margin.
  */
 function findSafeSentenceSplitLength(
   text: string,
@@ -120,10 +106,10 @@ function findSafeSentenceSplitLength(
   charsPerLine = 20
 ): number {
   if (targetLength >= text.length) return text.length;
-  // Look back at most one line width (approx charsPerLine) to find a punctuation boundary,
-  // preventing massive blank whitespace at the bottom of the page.
-  const lookbackSpan = Math.min(charsPerLine, Math.max(10, Math.floor(charsPerLine * 0.85)));
-  const minLookback = Math.max(8, targetLength - lookbackSpan);
+  // Look back at most 38% of line width to find a punctuation boundary,
+  // preventing loose gaps at the bottom of the page.
+  const lookbackSpan = Math.min(16, Math.max(6, Math.floor(charsPerLine * 0.38)));
+  const minLookback = Math.max(6, targetLength - lookbackSpan);
 
   // 1. First priority: strong sentence-ending punctuation (period, exclamation, question mark, ellipsis)
   const sentencePunct = '。！？；…\n.!?';
@@ -204,10 +190,11 @@ export function paginateBookContent(
     : Math.max(260, dimension.viewportWidth - horizontalPadding);
 
   // Vertical chrome calculation:
-  // Mobile: top bar 52px, card padding (~24px), header 20px, footer 20px, margin 8px = ~124px.
-  // Desktop: top bar 52px, footer bar 52px, card padding (~30px), header/footer/margins = ~164px.
-  const verticalChrome = isMobile ? 124 : 164;
-  const usableHeight = Math.max(240, dimension.viewportHeight - verticalChrome);
+  // Mobile: top bar ~52px, card padding (~16px), running header (~20px), footer (~20px) = ~108px
+  // Desktop: top bar ~56px, bottom scrubber bar ~52px, card padding (~20px), header/footer/margins (~36px) = ~164px
+  // Calibrated so lines fill cleanly to bottom without premature flush or overflow
+  const verticalChrome = isMobile ? 96 : 142;
+  const usableHeight = Math.max(260, dimension.viewportHeight - verticalChrome);
 
   // In CJK typography, character glyphs are square with 1em width.
   const effectiveCharWidth = settings.fontSize * (1.0 + Math.max(0, settings.letterSpacing));
@@ -240,9 +227,9 @@ export function paginateBookContent(
   };
 
   for (let i = 0; i < blocks.length; i++) {
-    let block: PageBlock = blocks[i];
+    const block: PageBlock = blocks[i];
 
-    // 1. Chapter heading: only level 1 major chapters (# 第一章) start on a fresh page
+    // 1. Level 1 Major Chapter Headings (# 第一章): always start on a fresh page
     if (
       block.type === 'heading' &&
       block.level === 1 &&
@@ -252,18 +239,326 @@ export function paginateBookContent(
       flushPage(block.startOffset);
     }
 
-    // 2. Headings: avoid orphan headings at the very bottom line of a page
+    // 2. Headings: Anti-orphan logic
+    // Never leave a heading alone on an empty page, nor stranded at the bottom of a page without content
     if (block.type === 'heading') {
-      const headingLines = estimateBlockLines(block, charsPerLine, false, spacingLines, lineHeightPx);
-      if (currentBlocks.length > 0 && currentLinesUsed + headingLines + 2 > maxLinesPerPage) {
-        flushPage(block.startOffset);
+      const headingLines = estimateBlockLines(
+        block,
+        charsPerLine,
+        false,
+        spacingLines,
+        lineHeightPx
+      );
+      if (currentBlocks.length > 0) {
+        // Look ahead to check whether at least part of the following block can fit
+        const nextBlock = blocks[i + 1];
+        const nextMinLines = nextBlock
+          ? Math.min(2.5, estimateBlockLines(nextBlock, charsPerLine, false, spacingLines, lineHeightPx))
+          : 1.5;
+        if (currentLinesUsed + headingLines + nextMinLines > maxLinesPerPage + 0.4) {
+          flushPage(block.startOffset);
+        }
       }
       currentBlocks.push(block);
       currentLinesUsed += headingLines;
       continue;
     }
 
-    // 3. Non-paragraph atomic blocks (mermaid diagrams, tables, code, blockquotes, lists, hr):
+    // 3. Lists: Continuous splitting across page boundaries
+    if (block.type === 'list' && (block.listItems || []).length > 0) {
+      let listBlock = block;
+      while (listBlock && (listBlock.listItems || []).length > 0) {
+        const items = listBlock.listItems!;
+        const remainingLines = maxLinesPerPage - currentLinesUsed;
+        const fullNeeded = estimateBlockLines(
+          listBlock,
+          charsPerLine,
+          false,
+          spacingLines,
+          lineHeightPx
+        );
+
+        // Entire list fits on current page
+        if (fullNeeded <= remainingLines + 0.6) {
+          currentBlocks.push(listBlock);
+          currentLinesUsed += fullNeeded;
+          if (currentLinesUsed >= maxLinesPerPage && i < blocks.length - 1) {
+            flushPage(listBlock.endOffset);
+          }
+          break;
+        }
+
+        // Partial list fits on current page (must fit at least 1 item)
+        if (remainingLines >= 1.5 && items.length > 1) {
+          let fitCount = 0;
+          let testLines = 0.2;
+          for (let idx = 0; idx < items.length; idx++) {
+            const itemLines =
+              Math.max(1, Math.ceil(items[idx].text.length / charsPerLine)) + 0.15;
+            if (testLines + itemLines <= remainingLines + 0.4) {
+              testLines += itemLines;
+              fitCount++;
+            } else {
+              break;
+            }
+          }
+
+          if (fitCount > 0 && fitCount < items.length) {
+            const sliceItems = items.slice(0, fitCount);
+            const remainderItems = items.slice(fitCount);
+            currentBlocks.push({
+              ...listBlock,
+              listItems: sliceItems,
+              text: sliceItems.map((it) => it.text).join('\n'),
+            });
+            currentLinesUsed += testLines;
+            flushPage(listBlock.startOffset);
+            listBlock = {
+              ...listBlock,
+              listItems: remainderItems,
+              text: remainderItems.map((it) => it.text).join('\n'),
+              isContinuation: true,
+              start: (listBlock.start || 1) + fitCount,
+            };
+            continue;
+          }
+        }
+
+        // If not even 1 item fits on the current page, flush to a fresh page
+        if (currentBlocks.length > 0) {
+          flushPage(listBlock.startOffset);
+          continue;
+        }
+
+        // Fresh page: if the list is larger than an entire page, fit as many as possible
+        let fitCount = 0;
+        let testLines = 0.2;
+        for (let idx = 0; idx < items.length; idx++) {
+          const itemLines =
+            Math.max(1, Math.ceil(items[idx].text.length / charsPerLine)) + 0.15;
+          if (testLines + itemLines <= maxLinesPerPage + 0.4 || fitCount === 0) {
+            testLines += itemLines;
+            fitCount++;
+          } else {
+            break;
+          }
+        }
+        const sliceItems = items.slice(0, fitCount);
+        const remainderItems = items.slice(fitCount);
+        currentBlocks.push({
+          ...listBlock,
+          listItems: sliceItems,
+          text: sliceItems.map((it) => it.text).join('\n'),
+        });
+        currentLinesUsed += testLines;
+        if (remainderItems.length > 0) {
+          flushPage(listBlock.startOffset);
+          listBlock = {
+            ...listBlock,
+            listItems: remainderItems,
+            text: remainderItems.map((it) => it.text).join('\n'),
+            isContinuation: true,
+            start: (listBlock.start || 1) + fitCount,
+          };
+        } else {
+          break;
+        }
+      }
+      continue;
+    }
+
+    // 4. Code Blocks: Continuous splitting across page boundaries
+    if (block.type === 'code') {
+      let codeBlock = block;
+      while (codeBlock && codeBlock.text.length > 0) {
+        const codeLines = codeBlock.text.split('\n');
+        const remainingLines = maxLinesPerPage - currentLinesUsed;
+        const fullNeeded = estimateBlockLines(
+          codeBlock,
+          charsPerLine,
+          false,
+          spacingLines,
+          lineHeightPx
+        );
+
+        if (fullNeeded <= remainingLines + 0.6) {
+          currentBlocks.push(codeBlock);
+          currentLinesUsed += fullNeeded;
+          if (currentLinesUsed >= maxLinesPerPage && i < blocks.length - 1) {
+            flushPage(codeBlock.endOffset);
+          }
+          break;
+        }
+
+        // Can we slice at least 2 lines of code onto the current page?
+        if (remainingLines >= 3.0 && codeLines.length >= 4) {
+          const linesToFit = Math.max(2, Math.floor((remainingLines - 1.2) / 0.85));
+          if (linesToFit >= 2 && linesToFit < codeLines.length) {
+            const sliceLines = codeLines.slice(0, linesToFit);
+            const remainderLines = codeLines.slice(linesToFit);
+            const sliceText = sliceLines.join('\n');
+            const remainderText = remainderLines.join('\n');
+            const sliceEndOffset: number = codeBlock.startOffset + sliceText.length;
+
+            currentBlocks.push({
+              ...codeBlock,
+              text: sliceText,
+              endOffset: sliceEndOffset,
+            });
+            currentLinesUsed += estimateBlockLines(
+              currentBlocks[currentBlocks.length - 1],
+              charsPerLine,
+              false,
+              spacingLines,
+              lineHeightPx
+            );
+            flushPage(sliceEndOffset);
+
+            codeBlock = {
+              ...codeBlock,
+              text: remainderText,
+              isContinuation: true,
+              startOffset: sliceEndOffset,
+              endOffset: codeBlock.endOffset,
+            };
+            continue;
+          }
+        }
+
+        // Not enough room on current page -> flush
+        if (currentBlocks.length > 0) {
+          flushPage(codeBlock.startOffset);
+          continue;
+        }
+
+        // Oversized code on fresh page
+        const linesToFit = Math.max(3, Math.floor((maxLinesPerPage - 1.2) / 0.85));
+        if (linesToFit < codeLines.length) {
+          const sliceLines = codeLines.slice(0, linesToFit);
+          const remainderLines = codeLines.slice(linesToFit);
+          const sliceText = sliceLines.join('\n');
+          const remainderText = remainderLines.join('\n');
+          const sliceEndOffset: number = codeBlock.startOffset + sliceText.length;
+
+          currentBlocks.push({
+            ...codeBlock,
+            text: sliceText,
+            endOffset: sliceEndOffset,
+          });
+          flushPage(sliceEndOffset);
+
+          codeBlock = {
+            ...codeBlock,
+            text: remainderText,
+            isContinuation: true,
+            startOffset: sliceEndOffset,
+            endOffset: codeBlock.endOffset,
+          };
+        } else {
+          currentBlocks.push(codeBlock);
+          currentLinesUsed += fullNeeded;
+          break;
+        }
+      }
+      continue;
+    }
+
+    // 5. Blockquotes: Continuous splitting across page boundaries
+    if (block.type === 'blockquote') {
+      let quoteBlock = block;
+      while (quoteBlock && quoteBlock.text.length > 0) {
+        const remainingLines = maxLinesPerPage - currentLinesUsed;
+        const fullNeeded = estimateBlockLines(
+          quoteBlock,
+          charsPerLine,
+          false,
+          spacingLines,
+          lineHeightPx
+        );
+
+        if (fullNeeded <= remainingLines + 0.6) {
+          currentBlocks.push(quoteBlock);
+          currentLinesUsed += fullNeeded;
+          if (currentLinesUsed >= maxLinesPerPage && i < blocks.length - 1) {
+            flushPage(quoteBlock.endOffset);
+          }
+          break;
+        }
+
+        if (remainingLines >= 2.0 && quoteBlock.text.length > 50) {
+          const approxTargetChars = Math.floor((remainingLines - 0.6) * (charsPerLine - 2));
+          const safeTarget = Math.min(quoteBlock.text.length - 1, approxTargetChars);
+          const splitIdx = findSafeSentenceSplitLength(quoteBlock.text, safeTarget, charsPerLine);
+
+          if (splitIdx >= 16 && splitIdx < quoteBlock.text.length) {
+            const sliceText = quoteBlock.text.slice(0, splitIdx);
+            const remainderText = quoteBlock.text.slice(splitIdx);
+            const sliceEndOffset: number = quoteBlock.startOffset + sliceText.length;
+
+            currentBlocks.push({
+              ...quoteBlock,
+              text: sliceText,
+              html: renderInlineMarkdown(sliceText),
+              endOffset: sliceEndOffset,
+            });
+            currentLinesUsed += estimateBlockLines(
+              currentBlocks[currentBlocks.length - 1],
+              charsPerLine,
+              false,
+              spacingLines,
+              lineHeightPx
+            );
+            flushPage(sliceEndOffset);
+
+            quoteBlock = {
+              ...quoteBlock,
+              text: remainderText,
+              html: renderInlineMarkdown(remainderText),
+              isContinuation: true,
+              startOffset: sliceEndOffset,
+              endOffset: quoteBlock.endOffset,
+            };
+            continue;
+          }
+        }
+
+        if (currentBlocks.length > 0) {
+          flushPage(quoteBlock.startOffset);
+          continue;
+        }
+
+        // Oversized quote on fresh page
+        const approxTargetChars = Math.floor((maxLinesPerPage - 0.6) * (charsPerLine - 2));
+        const safeTarget = Math.min(quoteBlock.text.length - 1, approxTargetChars);
+        const splitIdx = findSafeSentenceSplitLength(quoteBlock.text, safeTarget, charsPerLine);
+        const safeSplit =
+          splitIdx > 0 && splitIdx < quoteBlock.text.length ? splitIdx : Math.max(16, safeTarget);
+
+        const sliceText = quoteBlock.text.slice(0, safeSplit);
+        const remainderText = quoteBlock.text.slice(safeSplit);
+        const sliceEndOffset: number = quoteBlock.startOffset + sliceText.length;
+
+        currentBlocks.push({
+          ...quoteBlock,
+          text: sliceText,
+          html: renderInlineMarkdown(sliceText),
+          endOffset: sliceEndOffset,
+        });
+        flushPage(sliceEndOffset);
+
+        quoteBlock = {
+          ...quoteBlock,
+          text: remainderText,
+          html: renderInlineMarkdown(remainderText),
+          isContinuation: true,
+          startOffset: sliceEndOffset,
+          endOffset: quoteBlock.endOffset,
+        };
+      }
+      continue;
+    }
+
+    // 6. Non-paragraph atomic blocks (mermaid diagrams, tables, hr)
     if (block.type !== 'paragraph') {
       const neededLines = estimateBlockLines(
         block,
@@ -272,7 +567,7 @@ export function paginateBookContent(
         spacingLines,
         lineHeightPx
       );
-      if (currentBlocks.length > 0 && currentLinesUsed + neededLines > maxLinesPerPage) {
+      if (currentBlocks.length > 0 && currentLinesUsed + neededLines > maxLinesPerPage + 0.4) {
         flushPage(block.startOffset);
       }
       currentBlocks.push(block);
@@ -283,10 +578,11 @@ export function paginateBookContent(
       continue;
     }
 
-    // 4. Paragraph blocks: tightly pack and fill down to the bottom of the page
-    while (block && block.text.length > 0) {
+    // 7. Paragraph blocks: tightly pack and fill down to the bottom of the page
+    let pBlock: PageBlock | null = block;
+    while (pBlock && pBlock.text.length > 0) {
       const neededLines = estimateBlockLines(
-        block,
+        pBlock,
         charsPerLine,
         settings.indentFirstLine,
         spacingLines,
@@ -296,35 +592,35 @@ export function paginateBookContent(
 
       // Case A: Fits entirely into the remaining lines (with 0.6 line sub-pixel margin tolerance)
       if (neededLines <= remainingLines + 0.6) {
-        currentBlocks.push(block);
+        currentBlocks.push(pBlock);
         currentLinesUsed += neededLines;
         if (currentLinesUsed >= maxLinesPerPage && i < blocks.length - 1) {
-          flushPage(block.endOffset);
+          flushPage(pBlock.endOffset);
         }
         break;
       }
 
       // Case B: Does not fit entirely. Can we split to fill the remaining lines?
       if (remainingLines >= 1.0) {
-        const indentChars = settings.indentFirstLine && !block.isContinuation ? 2 : 0;
-        const usableTextLines = Math.max(1, remainingLines - spacingLines);
+        const indentChars = settings.indentFirstLine && !pBlock.isContinuation ? 2 : 0;
+        const usableTextLines = Math.max(1, remainingLines - spacingLines * 0.45);
         const approxTargetChars = Math.floor(usableTextLines * charsPerLine - indentChars);
-        const safeTarget = Math.min(block.text.length - 1, approxTargetChars);
-        const splitIdx = findSafeSentenceSplitLength(block.text, safeTarget, charsPerLine);
+        const safeTarget = Math.min(pBlock.text.length - 1, approxTargetChars);
+        const splitIdx = findSafeSentenceSplitLength(pBlock.text, safeTarget, charsPerLine);
 
-        const minAcceptableChars = Math.max(6, Math.floor(charsPerLine * 0.4));
-        if (splitIdx >= minAcceptableChars && splitIdx < block.text.length) {
-          const sliceText = block.text.slice(0, splitIdx);
-          const remainderText = block.text.slice(splitIdx);
-          const sliceEndOffset = block.startOffset + sliceText.length;
+        const minAcceptableChars = Math.max(6, Math.floor(charsPerLine * 0.35));
+        if (splitIdx >= minAcceptableChars && splitIdx < pBlock.text.length) {
+          const sliceText = pBlock.text.slice(0, splitIdx);
+          const remainderText = pBlock.text.slice(splitIdx);
+          const sliceEndOffset: number = pBlock.startOffset + sliceText.length;
 
           currentBlocks.push({
             type: 'paragraph',
             text: sliceText,
             html: renderInlineMarkdown(sliceText),
             isHeading: false,
-            isContinuation: block.isContinuation,
-            startOffset: block.startOffset,
+            isContinuation: pBlock.isContinuation,
+            startOffset: pBlock.startOffset,
             endOffset: sliceEndOffset,
           });
 
@@ -339,14 +635,14 @@ export function paginateBookContent(
 
           flushPage(sliceEndOffset);
 
-          block = {
+          pBlock = {
             type: 'paragraph',
             text: remainderText,
             html: renderInlineMarkdown(remainderText),
             isHeading: false,
             isContinuation: true,
             startOffset: sliceEndOffset,
-            endOffset: block.endOffset,
+            endOffset: pBlock.endOffset,
           };
           continue;
         }
@@ -354,43 +650,43 @@ export function paginateBookContent(
 
       // Case C: Less than 1 line remaining on current page -> flush page
       if (currentBlocks.length > 0) {
-        flushPage(block.startOffset);
+        flushPage(pBlock.startOffset);
         continue;
       }
 
       // Case D: Single oversized paragraph that exceeds an entire fresh page on its own
-      const indentChars = settings.indentFirstLine && !block.isContinuation ? 2 : 0;
-      const usableTextLines = Math.max(2, maxLinesPerPage - spacingLines);
+      const indentChars = settings.indentFirstLine && !pBlock.isContinuation ? 2 : 0;
+      const usableTextLines = Math.max(2, maxLinesPerPage - spacingLines * 0.45);
       const approxTargetChars = Math.floor(usableTextLines * charsPerLine - indentChars);
-      const safeTarget = Math.min(block.text.length - 1, approxTargetChars);
-      const splitIdx = findSafeSentenceSplitLength(block.text, safeTarget, charsPerLine);
+      const safeTarget = Math.min(pBlock.text.length - 1, approxTargetChars);
+      const splitIdx = findSafeSentenceSplitLength(pBlock.text, safeTarget, charsPerLine);
       const safeSplit =
-        splitIdx > 0 && splitIdx < block.text.length ? splitIdx : Math.max(12, safeTarget);
+        splitIdx > 0 && splitIdx < pBlock.text.length ? splitIdx : Math.max(12, safeTarget);
 
-      const sliceText = block.text.slice(0, safeSplit);
-      const remainderText = block.text.slice(safeSplit);
-      const sliceEndOffset = block.startOffset + sliceText.length;
+      const sliceText = pBlock.text.slice(0, safeSplit);
+      const remainderText = pBlock.text.slice(safeSplit);
+      const sliceEndOffset: number = pBlock.startOffset + sliceText.length;
 
       currentBlocks.push({
         type: 'paragraph',
         text: sliceText,
         html: renderInlineMarkdown(sliceText),
         isHeading: false,
-        isContinuation: block.isContinuation,
-        startOffset: block.startOffset,
+        isContinuation: pBlock.isContinuation,
+        startOffset: pBlock.startOffset,
         endOffset: sliceEndOffset,
       });
 
       flushPage(sliceEndOffset);
 
-      block = {
+      pBlock = {
         type: 'paragraph',
         text: remainderText,
         html: renderInlineMarkdown(remainderText),
         isHeading: false,
         isContinuation: true,
         startOffset: sliceEndOffset,
-        endOffset: block.endOffset,
+        endOffset: pBlock.endOffset,
       };
     }
   }

@@ -17,7 +17,7 @@ const STORE_FONTS = 'custom_fonts';
 const STORE_STATS = 'daily_stats';
 
 const SETTINGS_STORAGE_KEY = 'roast_reed_reader_settings_v1';
-const SEED_VERSION_KEY = 'roast_reed_seed_patriotic_md_v4';
+const SEED_VERSION_KEY = 'roast_reed_seed_patriotic_md_v5';
 
 export const DEFAULT_READER_SETTINGS: ReaderSettings = {
   theme: 'cafe',

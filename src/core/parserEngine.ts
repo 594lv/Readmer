@@ -22,6 +22,7 @@ const mermaidSvgCache = new Map<
  * labels wrap and size accurately in dynamic containers.
  */
 export function configureMermaidEngine(theme: ReaderTheme = 'cafe', containerWidth = 560): void {
+  if (typeof window === 'undefined') return;
   const safeContainerW = Math.max(180, containerWidth || 560);
   const isMobile = safeContainerW < 540;
   // Calculate adaptive wrapping width based on dynamic container width
@@ -164,12 +165,12 @@ export function sanitizeMermaidCode(rawCode: string): string {
     .replace(/```\s*$/, '')
     .trim();
 
-  // 1. Auto-quote node labels with special characters (&, #, +, -, :, etc.) if not already quoted
+  // 1. Auto-quote node labels with special characters (&, #, +, -, :, ;, etc.) if not already quoted
   cleaned = cleaned.replace(
-    /(\b[A-Za-z0-9_-]+)(\[|\(|\(\[|\[\(|\{\{)([^"\n\]\)\}>]+)(\]|\)|\)\]|\)\]|\}\})/g,
+    /(\b[A-Za-z0-9_-]+)(\[|\(|\(\[|\[\(|\{\{)([^"\n\]\)\}>]+)(\]|\)|\)\]|\}\})/g,
     (match, id, open, text, close) => {
       const trimmed = text.trim();
-      if (!trimmed.startsWith('"') || !trimmed.endsWith('"')) {
+      if (/[&+#:;/]/.test(trimmed) && (!trimmed.startsWith('"') || !trimmed.endsWith('"'))) {
         const escaped = trimmed.replace(/"/g, '\\"');
         return `${id}${open}"${escaped}"${close}`;
       }
@@ -229,7 +230,7 @@ export async function renderMermaidDiagram(
 
   const sanitized = sanitizeMermaidCode(rawCode);
   const cleanCode = normalizeMermaidDirectionToTD(sanitized, shouldForceTD);
-  const cacheKey = `v3:::${theme}:::${shouldForceTD ? 'TD' : 'AUTO'}:::${cleanCode}`;
+  const cacheKey = `v4:::${theme}:::${shouldForceTD ? 'TD' : 'AUTO'}:::${cleanCode}`;
 
   const cached = mermaidSvgCache.get(cacheKey);
   if (cached) {
@@ -242,48 +243,35 @@ export async function renderMermaidDiagram(
     if (existing) return existing;
 
     configureMermaidEngine(theme, safeContainerWidth);
-    const uniqueId = `mermaid-svg-node-${++mermaidRenderSeq}`;
+    const uniqueId = `mermaid_svg_${Date.now()}_${++mermaidRenderSeq}`;
 
-    let measureHost: HTMLDivElement | null = null;
-    if (typeof document !== 'undefined') {
-      measureHost = document.createElement('div');
-      measureHost.className = 'md-mermaid-svg-host';
-      measureHost.style.cssText = `
-        position: fixed;
-        left: -9999px;
-        top: 0;
-        width: ${safeContainerWidth}px;
-        max-width: 100vw;
-        visibility: hidden;
-        pointer-events: none;
-        font-family: "PingFang SC", "Microsoft YaHei", "Plus Jakarta Sans", sans-serif;
-        font-size: 13px;
-      `;
-      document.body.appendChild(measureHost);
+    let renderResult: { svg: string; bindFunctions?: (element: Element) => void };
+    try {
+      renderResult = await mermaid.render(uniqueId, cleanCode);
+    } catch (errPrimary) {
+      // If sanitized/cleanCode fails, fallback to rendering raw code directly
+      try {
+        const fallbackId = `mermaid_fb_${Date.now()}_${++mermaidRenderSeq}`;
+        renderResult = await mermaid.render(fallbackId, rawCode.trim());
+      } catch {
+        throw errPrimary;
+      }
     }
 
-    try {
-      const renderResult = await mermaid.render(
-        uniqueId,
-        cleanCode,
-        measureHost || undefined
-      );
-      const rawSvg = renderResult.svg;
+    const rawSvg = renderResult.svg;
+    let naturalWidth = safeContainerWidth;
+    let naturalHeight = 220;
+    let finalSvg = rawSvg;
 
-      let naturalWidth = safeContainerWidth;
-      let naturalHeight = 220;
-      let finalSvg = rawSvg;
-
-      if (measureHost) {
-        measureHost.innerHTML = rawSvg;
-        const svgEl = measureHost.querySelector('svg');
+    if (typeof DOMParser !== 'undefined') {
+      try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(rawSvg, 'image/svg+xml');
+        const svgEl = doc.querySelector('svg');
         if (svgEl) {
           const vbAttr = svgEl.getAttribute('viewBox');
           if (vbAttr) {
-            const parts = vbAttr
-              .trim()
-              .split(/[\s,]+/)
-              .map(Number);
+            const parts = vbAttr.trim().split(/[\s,]+/).map(Number);
             if (parts.length === 4 && !parts.some(isNaN) && parts[2] > 0 && parts[3] > 0) {
               naturalWidth = Math.round(parts[2]);
               naturalHeight = Math.round(parts[3]);
@@ -313,22 +301,20 @@ export async function renderMermaidDiagram(
           // and horizontal scroll panning without forced clipping, especially in narrow reader windows
           finalSvg = `<div class="mermaid-interactive-viewport" style="width: 100%; max-width: 100%; overflow-x: auto; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y pinch-zoom; display: flex; justify-content: center; align-items: center; position: relative;">${svgEl.outerHTML}</div>`;
         }
-      } else {
+      } catch {
         finalSvg = `<div class="mermaid-interactive-viewport" style="width: 100%; max-width: 100%; overflow-x: auto; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y pinch-zoom; display: flex; justify-content: center; align-items: center; position: relative;">${rawSvg}</div>`;
       }
-
-      const res = {
-        svg: finalSvg,
-        naturalWidth: Math.max(180, naturalWidth),
-        naturalHeight: Math.max(60, naturalHeight),
-      };
-      mermaidSvgCache.set(cacheKey, res);
-      return res;
-    } finally {
-      if (measureHost && measureHost.parentNode) {
-        measureHost.parentNode.removeChild(measureHost);
-      }
+    } else {
+      finalSvg = `<div class="mermaid-interactive-viewport" style="width: 100%; max-width: 100%; overflow-x: auto; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y pinch-zoom; display: flex; justify-content: center; align-items: center; position: relative;">${rawSvg}</div>`;
     }
+
+    const res = {
+      svg: finalSvg,
+      naturalWidth: Math.max(180, naturalWidth),
+      naturalHeight: Math.max(60, naturalHeight),
+    };
+    mermaidSvgCache.set(cacheKey, res);
+    return res;
   });
 
   mermaidRenderQueue = resultPromise.catch(() => {});
@@ -360,6 +346,7 @@ export interface ParsedMarkdownBlock {
   startOffset: number;
   endOffset: number;
   isContinuation?: boolean;
+  start?: number;
 }
 
 /**
@@ -748,7 +735,7 @@ export function parseDocumentWithMarkdownIt(content: string): ParsedMarkdownBloc
 
         if (depth > 0 && t.type === 'inline') {
           const rawItem = t.content.trim();
-          const taskMatch = rawItem.match(/^\[([ xX])\]\s+([\s\S]*)$/);
+          const taskMatch = rawItem.match(/^\[([ xX])\]\s*([\s\S]*)$/);
           if (taskMatch) {
             const checked = taskMatch[1].toLowerCase() === 'x';
             const cleanText = taskMatch[2].trim();

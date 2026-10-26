@@ -190,10 +190,9 @@ html[data-theme="eink"] {
   animation: einkFlash 220ms steps(3, end);
 }
 
-/* Subtle paper grain background texture */
+/* Smooth paper background texture (dotted grain removed) */
 .paper-grain {
-  background-image: radial-gradient(rgba(122, 99, 82, 0.055) 1px, transparent 0);
-  background-size: 20px 20px;
+  background-image: none;
 }
 
 /* Custom subtle scrollbars */
@@ -373,6 +372,18 @@ html[data-theme="eink"] {
 }
 .reader-md-td:last-child {
   border-right: none;
+}
+
+/* Full-width text layout & anti-cliff paragraph wrapping for reader columns */
+[data-reader-column="true"] {
+  width: 100%;
+}
+
+[data-reader-column="true"] p {
+  text-align: justify;
+  text-justify: inter-ideograph;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 

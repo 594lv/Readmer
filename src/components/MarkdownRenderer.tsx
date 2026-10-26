@@ -474,6 +474,8 @@ export const MermaidBlock: React.FC<{
   const [renderError, setRenderError] = useState<string | null>(null);
   const [showRaw, setShowRaw] = useState(false);
   const [isZoomed, setIsZoomed] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [renderCount, setRenderCount] = useState(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const requestIdRef = useRef<number>(0);
@@ -497,6 +499,7 @@ export const MermaidBlock: React.FC<{
 
   useEffect(() => {
     const currentRequestId = ++requestIdRef.current;
+    setLoading(true);
     const renderDiagram = async () => {
       try {
         const viewportW = typeof window !== 'undefined' ? window.innerWidth : 1280;
@@ -512,16 +515,18 @@ export const MermaidBlock: React.FC<{
             height: result.naturalHeight,
           });
           setRenderError(null);
+          setLoading(false);
         }
       } catch (err) {
         if (isMountedRef.current && currentRequestId === requestIdRef.current) {
           setRenderError(err instanceof Error ? err.message : 'Mermaid 语法解析失败');
+          setLoading(false);
         }
       }
     };
 
     renderDiagram();
-  }, [code, theme, forceTopDown, isMobile, parentContainerWidth]);
+  }, [code, theme, forceTopDown, isMobile, parentContainerWidth, renderCount]);
 
   const viewportMaxW = typeof window !== 'undefined' ? window.innerWidth : 1280;
   const containerWidthPx = containerRef.current?.clientWidth || parentContainerWidth || 560;
@@ -665,13 +670,44 @@ export const MermaidBlock: React.FC<{
         </div>
       </div>
 
-      {showRaw || renderError ? (
+      {showRaw ? (
         <pre
           className="font-mono-tabular overflow-x-auto p-3 text-xs leading-relaxed"
           style={{ color: 'var(--text-primary)' }}
         >
-          {code}
+          <code>{code}</code>
         </pre>
+      ) : renderError ? (
+        <div className="p-3 text-xs space-y-2">
+          <div className="flex items-center justify-between text-amber-700 dark:text-amber-400 font-medium">
+            <span>图表解析失败: {renderError}</span>
+            <button
+              type="button"
+              onClick={() => setRenderCount((c) => c + 1)}
+              className="flex items-center gap-1 rounded px-2 py-0.5 underline cursor-pointer hover:opacity-80"
+            >
+              <RotateCcw className="h-3 w-3" />
+              <span>重新加载</span>
+            </button>
+          </div>
+          <pre
+            className="font-mono-tabular overflow-x-auto p-2.5 rounded-lg text-[11px] leading-relaxed"
+            style={{
+              backgroundColor: 'var(--bg-elevated)',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            <code>{code}</code>
+          </pre>
+        </div>
+      ) : loading && !svgHtml ? (
+        <div
+          className="flex h-24 items-center justify-center text-xs"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <Sparkles className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+          <span>图表绘制中...</span>
+        </div>
       ) : (
         <div
           ref={gestureViewportRef}
@@ -737,7 +773,9 @@ export const MermaidBlock: React.FC<{
 export const CodeBlockView: React.FC<{
   code: string;
   lang?: string;
-}> = ({ code, lang }) => {
+  isContinuation?: boolean;
+  isLastBlock?: boolean;
+}> = ({ code, lang, isContinuation, isLastBlock = false }) => {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -748,7 +786,7 @@ export const CodeBlockView: React.FC<{
 
   return (
     <div
-      className="my-3 overflow-hidden rounded-xl"
+      className={`overflow-hidden rounded-xl ${isLastBlock ? 'mt-2 mb-0' : 'my-2.5'}`}
       style={{
         backgroundColor: 'var(--bg-surface)',
         border: '1px solid var(--border-subtle)',
@@ -765,7 +803,10 @@ export const CodeBlockView: React.FC<{
           color: 'var(--text-muted)',
         }}
       >
-        <span className="font-mono-tabular uppercase">{lang || 'text'}</span>
+        <span className="font-mono-tabular uppercase">
+          {lang || 'text'}
+          {isContinuation ? ' (续)' : ''}
+        </span>
         <button
           type="button"
           onClick={handleCopy}
@@ -833,12 +874,20 @@ export const MarkdownBlockRenderer: React.FC<{
       );
 
     case 'code':
-      return <CodeBlockView code={block.text} lang={block.lang} />;
+      return (
+        <CodeBlockView
+          code={block.text}
+          lang={block.lang}
+          isContinuation={block.isContinuation}
+          isLastBlock={isLastBlock}
+        />
+      );
 
     case 'table': {
       if (block.html) {
         return (
           <div
+            className={isLastBlock ? 'mt-2 mb-0' : 'my-2.5'}
             style={{ textIndent: '0px' }}
             onClick={(e) => e.stopPropagation()}
             dangerouslySetInnerHTML={{ __html: block.html }}
@@ -850,7 +899,9 @@ export const MarkdownBlockRenderer: React.FC<{
       const align = block.tableAlign || [];
       return (
         <div
-          className="reader-md-table-wrap my-3.5 overflow-x-auto rounded-xl"
+          className={`reader-md-table-wrap overflow-x-auto rounded-xl ${
+            isLastBlock ? 'mt-2 mb-0' : 'my-2.5'
+          }`}
           style={{ textIndent: '0px' }}
           onClick={(e) => e.stopPropagation()}
         >
@@ -904,7 +955,7 @@ export const MarkdownBlockRenderer: React.FC<{
 
       return (
         <blockquote
-          className="my-3 rounded-xl p-3.5 text-[0.95em]"
+          className={`rounded-xl p-3.5 text-[0.95em] ${isLastBlock ? 'mt-2 mb-0' : 'my-2.5'}`}
           style={{
             backgroundColor: 'var(--bg-surface)',
             border: '1px solid var(--border-subtle)',
@@ -933,13 +984,19 @@ export const MarkdownBlockRenderer: React.FC<{
     case 'list': {
       const items = block.listItems || [];
       const ListTag = block.ordered ? 'ol' : 'ul';
+      const isTaskList = items.some((item) => item.task);
       return (
         <ListTag
-          className={`my-2.5 space-y-1.5 pl-5 ${
-            block.ordered ? 'list-decimal' : 'list-disc'
+          start={block.ordered ? (block.start || 1) : undefined}
+          className={`space-y-1.5 ${isLastBlock ? 'mt-1.5 mb-0' : 'my-2'} ${
+            isTaskList
+              ? 'list-none pl-1'
+              : block.ordered
+              ? 'list-decimal pl-6'
+              : 'list-disc pl-6'
           }`}
           style={{
-            marginBottom: `${settings.paragraphSpacing}px`,
+            marginBottom: isLastBlock ? '0px' : `${Math.round(settings.paragraphSpacing * 0.7)}px`,
             color: 'var(--text-primary)',
             textIndent: '0px',
           }}
@@ -949,22 +1006,24 @@ export const MarkdownBlockRenderer: React.FC<{
               return (
                 <li
                   key={idx}
-                  className="flex list-none items-start gap-2 -ml-4"
+                  className="flex list-none items-start gap-2.5 text-left"
                   style={{ textIndent: '0px' }}
                 >
-                  {item.checked ? (
-                    <CheckSquare
-                      className="mt-1 h-4 w-4 shrink-0"
-                      style={{ color: 'var(--accent-primary)' }}
-                    />
-                  ) : (
-                    <Square
-                      className="mt-1 h-4 w-4 shrink-0"
-                      style={{ color: 'var(--text-muted)' }}
-                    />
-                  )}
+                  <span className="mt-0.5 flex shrink-0 items-center justify-center">
+                    {item.checked ? (
+                      <CheckSquare
+                        className="h-4.5 w-4.5"
+                        style={{ color: 'var(--accent-primary)' }}
+                      />
+                    ) : (
+                      <Square
+                        className="h-4.5 w-4.5"
+                        style={{ color: 'var(--text-muted)' }}
+                      />
+                    )}
+                  </span>
                   <span
-                    className={item.checked ? 'line-through opacity-75' : ''}
+                    className="flex-1 leading-relaxed"
                     dangerouslySetInnerHTML={{
                       __html: item.html || renderInlineMarkdown(item.text),
                     }}
@@ -975,6 +1034,7 @@ export const MarkdownBlockRenderer: React.FC<{
             return (
               <li
                 key={idx}
+                className="leading-relaxed text-left"
                 style={{ textIndent: '0px' }}
                 dangerouslySetInnerHTML={{
                   __html: item.html || renderInlineMarkdown(item.text),
@@ -1004,6 +1064,8 @@ export const MarkdownBlockRenderer: React.FC<{
             textIndent: settings.indentFirstLine && !block.isContinuation ? '2em' : '0',
             backgroundColor: highlightBg,
             textAlign: 'justify',
+            wordBreak: 'break-word',
+            overflowWrap: 'break-word',
           }}
           dangerouslySetInnerHTML={{
             __html: block.html || renderInlineMarkdown(block.text),
