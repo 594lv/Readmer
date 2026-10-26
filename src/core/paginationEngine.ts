@@ -151,12 +151,20 @@ function findSafeSentenceSplitLength(
  * Tightly packs paragraphs across page boundaries so the text completely fills the reading window
  * down to the bottom margin without artificial whitespace or overflowing.
  */
+export function getMaxColumnWidthPx(mode: ReaderSettings['maxColumnWidth']): number | null {
+  if (mode === 'narrow') return 680;
+  if (mode === 'standard') return 860;
+  if (mode === 'wide') return 1080;
+  return null; // 'full' -> unrestricted
+}
+
 export function paginateBookContent(
   content: string,
   chapters: Chapter[],
   settings: ReaderSettings,
   dimension: PaginationDimension,
-  isSpreadMode: boolean
+  isSpreadMode: boolean,
+  preParsedBlocks?: ParsedMarkdownBlock[]
 ): VirtualPage[] {
   if (!content || content.length === 0) {
     return [
@@ -180,14 +188,16 @@ export function paginateBookContent(
   }
 
   const isMobile = dimension.viewportWidth < 640;
-  // In single-page mode, redundant side margins are removed in ReaderView
-  // so text automatically fills the canvas without artificial 768px clamping
   const horizontalPadding = isSpreadMode
     ? (isMobile ? 52 : Math.max(36, settings.pageMargin * 2))
-    : (isMobile ? 24 : Math.max(20, Math.min(settings.pageMargin, 36)));
+    : (isMobile ? 24 : Math.max(20, Math.min(settings.pageMargin * 1.4, 96)));
+  const rawSingleWidth = Math.max(260, dimension.viewportWidth - horizontalPadding);
+  const measureLimitPx = !isSpreadMode ? getMaxColumnWidthPx(settings.maxColumnWidth) : null;
   const singlePageWidth = isSpreadMode
     ? Math.max(240, (Math.min(1280, dimension.viewportWidth) - horizontalPadding - 48) / 2)
-    : Math.max(260, dimension.viewportWidth - horizontalPadding);
+    : measureLimitPx
+      ? Math.min(rawSingleWidth, measureLimitPx)
+      : rawSingleWidth;
 
   // Vertical chrome calculation:
   // Mobile: top bar ~52px, card padding (~16px), running header (~20px), footer (~20px) = ~108px
@@ -203,7 +213,7 @@ export function paginateBookContent(
   const maxLinesPerPage = Math.max(6, Math.floor(usableHeight / lineHeightPx));
   const spacingLines = settings.paragraphSpacing / lineHeightPx;
 
-  const blocks = parseDocumentWithMarkdownIt(content);
+  const blocks = preParsedBlocks || parseDocumentWithMarkdownIt(content);
   const pages: VirtualPage[] = [];
 
   let currentBlocks: PageBlock[] = [];

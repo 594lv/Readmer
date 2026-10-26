@@ -16,6 +16,7 @@ import {
   LayoutGrid,
   List,
   Lock,
+  MoreHorizontal,
   Plus,
   Search,
   Shield,
@@ -135,8 +136,31 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
   const [batchMode, setBatchMode] = useState(false);
   const [selectedBookIds, setSelectedBookIds] = useState<string[]>([]);
   const [batchToast, setBatchToast] = useState<string | null>(null);
+  const [activeTouchMenuBookId, setActiveTouchMenuBookId] = useState<string | null>(null);
+  const [confirmDeleteBookId, setConfirmDeleteBookId] = useState<string | null>(null);
+  const confirmDeleteTimerRef = useRef<number | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleRequestDeleteBook = (bookId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (confirmDeleteBookId === bookId) {
+      if (confirmDeleteTimerRef.current) {
+        window.clearTimeout(confirmDeleteTimerRef.current);
+      }
+      setConfirmDeleteBookId(null);
+      setActiveTouchMenuBookId(null);
+      onDeleteBook(bookId);
+    } else {
+      setConfirmDeleteBookId(bookId);
+      if (confirmDeleteTimerRef.current) {
+        window.clearTimeout(confirmDeleteTimerRef.current);
+      }
+      confirmDeleteTimerRef.current = window.setTimeout(() => {
+        setConfirmDeleteBookId((prev) => (prev === bookId ? null : prev));
+      }, 3200);
+    }
+  };
 
   useEffect(() => {
     try {
@@ -964,7 +988,7 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
                       />
                     </div>
 
-                    {/* Batch checkbox or Hover Quick Action Icon Dock */}
+                    {/* Batch checkbox or Hover/Touch Quick Action Icon Dock */}
                     {batchMode ? (
                       <div
                         className="absolute top-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-md shadow-xs"
@@ -983,9 +1007,13 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
                       </div>
                     ) : (
                       <div
-                        className="absolute top-1.5 right-1.5 flex max-w-[calc(100%-12px)] flex-wrap items-center justify-end gap-1 rounded-lg p-1 opacity-0 backdrop-blur-xs transition-opacity group-hover:opacity-100 focus-within:opacity-100"
+                        className={`absolute top-1.5 right-1.5 flex max-w-[calc(100%-12px)] flex-wrap items-center justify-end gap-1 rounded-lg p-1 backdrop-blur-xs transition-opacity ${
+                          activeTouchMenuBookId === book.id || confirmDeleteBookId === book.id
+                            ? 'opacity-100'
+                            : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
+                        }`}
                         style={{
-                          backgroundColor: 'rgba(251, 247, 240, 0.94)',
+                          backgroundColor: 'rgba(251, 247, 240, 0.95)',
                           border: '1px solid var(--border-subtle)',
                         }}
                         onClick={(e) => e.stopPropagation()}
@@ -1052,15 +1080,26 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onDeleteBook(book.id);
-                          }}
-                          className="flex h-7 w-7 items-center justify-center rounded hover:text-red-600"
-                          style={{ color: '#544032' }}
-                          title="移除"
+                          onClick={(e) => handleRequestDeleteBook(book.id, e)}
+                          className={`flex h-7 items-center justify-center rounded px-1.5 text-[11px] font-medium transition-colors ${
+                            confirmDeleteBookId === book.id
+                              ? 'bg-[#B44332] text-white'
+                              : 'w-7 hover:text-red-600'
+                          }`}
+                          style={
+                            confirmDeleteBookId === book.id ? undefined : { color: '#544032' }
+                          }
+                          title={
+                            confirmDeleteBookId === book.id
+                              ? '再次点击确认永久移除'
+                              : '移除书籍'
+                          }
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          {confirmDeleteBookId === book.id ? (
+                            <span>确认删</span>
+                          ) : (
+                            <Trash2 className="h-3.5 w-3.5" />
+                          )}
                         </button>
                       </div>
                     )}
@@ -1076,13 +1115,32 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
                       >
                         {book.title}
                       </h3>
-                      {book.isFavorite && (
-                        <Heart
-                          className="h-3 w-3 shrink-0"
-                          style={{ color: 'var(--accent-primary)' }}
-                          fill="currentColor"
-                        />
-                      )}
+                      <div className="flex shrink-0 items-center gap-1">
+                        {book.isFavorite && (
+                          <Heart
+                            className="h-3 w-3 shrink-0"
+                            style={{ color: 'var(--accent-primary)' }}
+                            fill="currentColor"
+                          />
+                        )}
+                        {!batchMode && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveTouchMenuBookId((prev) =>
+                                prev === book.id ? null : book.id
+                              );
+                            }}
+                            className="flex h-5 w-5 items-center justify-center rounded sm:opacity-60 hover:opacity-100"
+                            style={{ color: 'var(--text-muted)' }}
+                            title="展开快捷操作菜单"
+                            aria-label="展开快捷操作菜单"
+                          >
+                            <MoreHorizontal className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div
                       className="mt-1 flex items-center justify-between gap-1.5 text-xs"
@@ -1209,7 +1267,7 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
                       />
                     </div>
 
-                    {/* Batch Selection Checkbox or Hover Action Dock */}
+                    {/* Batch Selection Checkbox or Hover/Touch Action Dock */}
                     {batchMode ? (
                       <div
                         className="absolute top-1.5 right-1.5 flex h-6 w-6 items-center justify-center rounded-md shadow-xs"
@@ -1228,9 +1286,13 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
                       </div>
                     ) : (
                       <div
-                        className="absolute top-1 right-1 flex max-w-[calc(100%-8px)] flex-wrap items-center justify-end gap-0.5 rounded-md p-0.5 opacity-0 backdrop-blur-xs transition-opacity group-hover:opacity-100 focus-within:opacity-100"
+                        className={`absolute top-1 right-1 flex max-w-[calc(100%-8px)] flex-wrap items-center justify-end gap-0.5 rounded-md p-0.5 backdrop-blur-xs transition-opacity ${
+                          activeTouchMenuBookId === book.id || confirmDeleteBookId === book.id
+                            ? 'opacity-100'
+                            : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
+                        }`}
                         style={{
-                          backgroundColor: 'rgba(251, 247, 240, 0.94)',
+                          backgroundColor: 'rgba(251, 247, 240, 0.95)',
                           border: '1px solid var(--border-subtle)',
                         }}
                         onClick={(e) => e.stopPropagation()}
@@ -1295,6 +1357,29 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
                         >
                           <Edit3 className="h-3 w-3" />
                         </button>
+                        <button
+                          type="button"
+                          onClick={(e) => handleRequestDeleteBook(book.id, e)}
+                          className={`flex h-5 items-center justify-center rounded px-1 text-[10px] font-medium ${
+                            confirmDeleteBookId === book.id
+                              ? 'bg-[#B44332] text-white'
+                              : 'w-5 hover:text-red-600'
+                          }`}
+                          style={
+                            confirmDeleteBookId === book.id ? undefined : { color: '#544032' }
+                          }
+                          title={
+                            confirmDeleteBookId === book.id
+                              ? '再次点击确认移除'
+                              : '移除书籍'
+                          }
+                        >
+                          {confirmDeleteBookId === book.id ? (
+                            <span>删</span>
+                          ) : (
+                            <Trash2 className="h-3 w-3" />
+                          )}
+                        </button>
                       </div>
                     )}
                   </div>
@@ -1309,13 +1394,31 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
                       >
                         {book.title}
                       </h3>
-                      {book.isFavorite && (
-                        <Heart
-                          className="mt-0.5 h-2.5 w-2.5 shrink-0"
-                          style={{ color: 'var(--accent-primary)' }}
-                          fill="currentColor"
-                        />
-                      )}
+                      <div className="flex shrink-0 items-center gap-0.5">
+                        {book.isFavorite && (
+                          <Heart
+                            className="mt-0.5 h-2.5 w-2.5 shrink-0"
+                            style={{ color: 'var(--accent-primary)' }}
+                            fill="currentColor"
+                          />
+                        )}
+                        {!batchMode && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveTouchMenuBookId((prev) =>
+                                prev === book.id ? null : book.id
+                              );
+                            }}
+                            className="flex h-4 w-4 items-center justify-center rounded"
+                            style={{ color: 'var(--text-muted)' }}
+                            title="更多操作"
+                          >
+                            <MoreHorizontal className="h-3 w-3" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div
                       className="mt-0.5 flex items-center justify-between gap-1 text-[10px] leading-tight"
@@ -1602,12 +1705,28 @@ export const BookshelfView: React.FC<BookshelfViewProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={() => onDeleteBook(book.id)}
-                          className="flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:text-red-600"
-                          style={{ color: 'var(--text-muted)' }}
-                          title="移除"
+                          onClick={(e) => handleRequestDeleteBook(book.id, e)}
+                          className={`flex h-7 items-center justify-center rounded-md px-1.5 text-[11px] font-medium transition-colors ${
+                            confirmDeleteBookId === book.id
+                              ? 'bg-[#B44332] text-white'
+                              : 'w-7 hover:text-red-600'
+                          }`}
+                          style={
+                            confirmDeleteBookId === book.id
+                              ? undefined
+                              : { color: 'var(--text-muted)' }
+                          }
+                          title={
+                            confirmDeleteBookId === book.id
+                              ? '再次点击确认移除'
+                              : '移除书籍'
+                          }
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          {confirmDeleteBookId === book.id ? (
+                            <span>确认删</span>
+                          ) : (
+                            <Trash2 className="h-3.5 w-3.5" />
+                          )}
                         </button>
                       </div>
                     </div>

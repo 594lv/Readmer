@@ -23,6 +23,7 @@ export const DEFAULT_READER_SETTINGS: ReaderSettings = {
   theme: 'cafe',
   einkFlashRefresh: true,
   layoutMode: 'paginated-double',
+  maxColumnWidth: 'standard',
   fontFamily: 'serif-editorial',
   fontSize: 19,
   lineHeight: 1.85,
@@ -35,6 +36,11 @@ export const DEFAULT_READER_SETTINGS: ReaderSettings = {
   autoFlipPageInterval: 12,
   autoScrollSpeed: 36,
   dailyGoalMinutes: 45,
+  ttsEngine: 'edge',
+  ttsEdgeVoice: 'zh-CN-XiaoxiaoNeural',
+  ttsVoiceURI: '',
+  ttsRate: 1.0,
+  ttsPitch: 1.0,
 };
 
 function openDatabase(): Promise<IDBDatabase> {

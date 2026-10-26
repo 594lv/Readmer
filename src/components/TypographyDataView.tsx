@@ -40,6 +40,7 @@ import {
   buildHtmlNotebookExport,
   buildTxtExport,
   triggerFileDownload,
+  warmUpMermaidDiagramsForContent,
 } from '../core/parserEngine';
 import { exportFullLibraryFromIndexedDB } from '../core/storageEngine';
 import { ExportStudioModal } from './ExportStudioModal';
@@ -92,7 +93,7 @@ export const TypographyDataView: React.FC<TypographyDataViewProps> = ({
 
   const selectedBook = books.find((b) => b.id === selectedExportBookId) || books[0];
 
-  const handleQuickExportFormat = (format: ExportFormat) => {
+  const handleQuickExportFormat = async (format: ExportFormat) => {
     if (!selectedBook) return;
     const bookAnns = annotations.filter((a) => a.bookId === selectedBook.id);
     const safeTitle = selectedBook.title.replace(/[\\/:*?"<>|]/g, '');
@@ -107,6 +108,7 @@ export const TypographyDataView: React.FC<TypographyDataViewProps> = ({
       triggerFileDownload(`${safeTitle}-手账.md`, md, 'text/markdown');
       showToast('已导出 Markdown (.md) 手账');
     } else if (format === 'epub') {
+      await warmUpMermaidDiagramsForContent(selectedBook.content, cfg.themeStyle);
       const blob = buildEpubBlob(selectedBook, bookAnns, dailyStats, {
         ...cfg,
         includeFullText: true,
@@ -114,6 +116,7 @@ export const TypographyDataView: React.FC<TypographyDataViewProps> = ({
       triggerBlobDownload(`${safeTitle}.epub`, blob);
       showToast('已打包标准 EPUB (.epub) 电子书');
     } else if (format === 'pdf') {
+      await warmUpMermaidDiagramsForContent(selectedBook.content, cfg.themeStyle);
       const html = buildStyledHtmlDocument(selectedBook, bookAnns, dailyStats, cfg);
       printDocumentViaHiddenIframe(html);
       showToast('已唤起精美 PDF 打印排版');
@@ -126,6 +129,7 @@ export const TypographyDataView: React.FC<TypographyDataViewProps> = ({
       triggerFileDownload(`${safeTitle}-数据.json`, json, 'application/json');
       showToast('已导出 JSON 结构化数据');
     } else if (format === 'html') {
+      await warmUpMermaidDiagramsForContent(selectedBook.content, cfg.themeStyle);
       const html = buildHtmlNotebookExport(selectedBook, bookAnns, includeFullTextInExport);
       triggerFileDownload(`${safeTitle}-手账.html`, html, 'text/html');
       showToast('已导出 HTML 手账');
