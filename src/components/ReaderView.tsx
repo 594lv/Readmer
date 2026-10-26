@@ -5,8 +5,6 @@ import {
   Bookmark,
   Check,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   Coffee,
   Columns2,
   Download,
@@ -2200,50 +2198,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             chromeVisible ? 'pt-13 pb-2.5 sm:pt-14 sm:pb-14' : 'pt-13 pb-2.5 sm:py-5'
           }`}
         >
-          {/* Left Floating Quick Page-Turn Icon Button */}
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              handlePrevPage();
-            }}
-            disabled={!canGoPrev}
-            className={`hidden sm:flex absolute top-1/2 left-2 z-20 h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full opacity-60 transition-all hover:opacity-100 disabled:opacity-15 shadow-sm ${
-              isSinglePage ? 'backdrop-blur-xs' : ''
-            }`}
-            style={{
-              backgroundColor: 'var(--bg-surface)',
-              color: 'var(--text-primary)',
-              border: '1px solid var(--border-subtle)',
-            }}
-            title="上一页 (←)"
-            aria-label="上一页"
-          >
-            <ChevronLeft className="h-5 w-5" />
-          </button>
-
-          {/* Right Floating Quick Page-Turn Icon Button */}
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              handleNextPage();
-            }}
-            disabled={!canGoNext}
-            className={`hidden sm:flex absolute top-1/2 right-2 z-20 h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full opacity-60 transition-all hover:opacity-100 disabled:opacity-15 shadow-sm ${
-              isSinglePage ? 'backdrop-blur-xs' : ''
-            }`}
-            style={{
-              backgroundColor: 'var(--bg-surface)',
-              color: 'var(--text-primary)',
-              border: '1px solid var(--border-subtle)',
-            }}
-            title="下一页 (→ / Space)"
-            aria-label="下一页"
-          >
-            <ChevronRight className="h-5 w-5" />
-          </button>
-
           {isPaginated ? (
             <div
               className={`relative flex h-full w-full flex-col justify-between overflow-hidden transition-all duration-200 ${
